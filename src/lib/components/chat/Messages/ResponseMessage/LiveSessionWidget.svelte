@@ -3,6 +3,8 @@
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
 
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import { socketStatus } from '$lib/stores';
 	import {
 		formatCompactCount,
@@ -129,7 +131,6 @@
 	else stopTicker();
 
 	$: elapsedMs = widgetElapsedMs(state, isActive, now);
-	$: completedSteps = state?.steps.filter((step) => step.status === 'complete').length ?? 0;
 	$: approxTokens = Math.round((contentLength ?? 0) / 4);
 	$: activeViewers = session?.activeViewers ?? 1;
 
@@ -140,6 +141,50 @@
 					value
 				)
 			: formatCompactCount(value);
+
+	// Expansion is tri-state: `null` means "follow the default", which is expanded while
+	// the trace is streaming (the checklist is the point) and collapsed once it settles
+	// into a footer. An explicit toggle wins from then on.
+	let expandedOverride: boolean | null = null;
+	$: expanded = expandedOverride ?? isActive;
+
+	$: metricSummary = Object.entries(state?.metrics ?? {}).map(
+		([metricKey, metric]) =>
+			`${formatMetric(metricKey, metric.value)} ${metric.label.toLowerCase()}`
+	);
+
+	// The last running step is the one being worked on; steps only ever move forward.
+	$: runningStep = (state?.steps ?? []).filter((step) => step.status === 'running').at(-1) ?? null;
+
+	/** The one line always on screen: what is happening right now, or how it ended. */
+	$: primaryLabel =
+		displayStatus === 'error'
+			? `${$i18n.t('Error')} · ${state?.errorMessage ?? $i18n.t('Stream failed')}`
+			: displayStatus === 'complete'
+				? [$i18n.t('Complete'), ...metricSummary].join(' · ')
+				: displayStatus === 'starting'
+					? $i18n.t('Preparing session…')
+					: workflowDone
+						? // The trace is done but the answer is not — the two-clock case.
+							$i18n.t('Retrieval complete · generating answer…')
+						: `${runningStep?.label ?? $i18n.t('Working')}…`;
+
+	$: statsText = `${formatElapsed(elapsedMs)} · ~ ${formatCompactCount(approxTokens)} ${$i18n.t('tokens')}`;
+	$: statsSpokenText = $i18n.t('{{duration}}, approximately {{count}} tokens', {
+		duration: formatElapsed(elapsedMs),
+		count: approxTokens
+	});
+
+	/** Healthy states stay silent; only exceptions earn a line in the trace. */
+	$: showConnection = $socketStatus !== 'connected';
+
+	$: tooltipText = [
+		primaryLabel,
+		statsSpokenText,
+		...(state?.steps ?? []).map((step) => `${step.label} — ${stepStatusLabel[step.status]}`),
+		...(showConnection ? [connectionLabel] : []),
+		...(activeViewers > 1 ? [$i18n.t('{{count}} sessions', { count: activeViewers })] : [])
+	].join('\n');
 
 	$: statusLabel = {
 		starting: $i18n.t('Starting'),
@@ -161,147 +206,134 @@
 	};
 </script>
 
-<div
-	class="live-session-widget {entered ? 'live-session-widget--in' : ''} w-full my-1.5 px-2.5 py-2
-		text-xs rounded-lg border border-gray-100 dark:border-gray-850 bg-gray-50/60 dark:bg-gray-900/40"
->
+<div class="live-session-widget {entered ? 'live-session-widget--in' : ''} w-full my-1.5 text-xs">
 	<!--
 		The single live region. Ticking numbers (elapsed, tokens, viewers) stay outside it
 		on purpose — inside, a screen reader would announce them every second.
 	-->
 	<span class="sr-only" role="status" aria-live="polite">{statusLabel}</span>
 
-	<div class="flex items-center gap-2 flex-wrap min-w-0">
-		<span
-			class="font-medium {displayStatus === 'error'
-				? 'text-red-600 dark:text-red-400'
-				: 'text-gray-700 dark:text-gray-300'}"
-			aria-hidden="true">{statusLabel}</span
-		>
-
-		<span class="flex items-center gap-1 text-gray-500 dark:text-gray-400 min-w-0">
+	<Tooltip
+		content={tooltipText.replace(/\n/g, '<br/>')}
+		placement="top"
+		touch={false}
+		className="w-full"
+	>
+		<div class="flex items-center gap-1.5 w-full min-w-0">
+			<!--
+				Shimmer is the working indicator on this line, so it goes on the label itself
+				rather than a separate spinner.
+			-->
 			<span
-				class="size-1.5 rounded-full shrink-0 {$socketStatus === 'connected'
-					? 'bg-green-500'
-					: $socketStatus === 'reconnecting'
-						? 'bg-amber-500'
-						: 'bg-gray-400 dark:bg-gray-600'}"
-				aria-hidden="true"
-			></span>
-			<span class="truncate">{connectionLabel}</span>
-		</span>
-
-		<span class="text-gray-500 dark:text-gray-400 tabular-nums">
-			{activeViewers === 1
-				? $i18n.t('1 session')
-				: $i18n.t('{{count}} sessions', { count: activeViewers })}
-		</span>
-
-		<!--
-			Only shown while a side-channel session is actually open. The backend emits
-			'complete' when the scripted stream ends or is cancelled, which says nothing
-			about the answer — rendering that as "Session complete" would repeat the very
-			claim this widget is careful not to make.
-		-->
-		{#if session?.status === 'streaming'}
-			<span
-				class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-500 dark:text-gray-400"
+				class="truncate min-w-0 {displayStatus === 'error'
+					? 'text-red-600 dark:text-red-400'
+					: isActive
+						? 'shimmer'
+						: 'text-gray-500 dark:text-gray-400'}"
 			>
-				{$i18n.t('Session active')}
+				{primaryLabel}
 			</span>
-		{/if}
-	</div>
+
+			<span class="text-gray-400 dark:text-gray-600 tabular-nums shrink-0" aria-hidden="true">
+				({statsText})
+			</span>
+			<span class="sr-only">{statsSpokenText}</span>
+
+			<button
+				type="button"
+				class="shrink-0 p-0.5 -m-0.5 rounded text-gray-400 dark:text-gray-600 hover:text-gray-600
+					dark:hover:text-gray-400 focus-visible:outline-none focus-visible:ring-1
+					focus-visible:ring-gray-400 dark:focus-visible:ring-gray-600"
+				aria-label={$i18n.t('Toggle session details')}
+				aria-expanded={expanded}
+				on:click={() => (expandedOverride = !expanded)}
+			>
+				<ChevronDown className="size-3 transition-transform {expanded ? 'rotate-180' : ''}" />
+			</button>
+		</div>
+	</Tooltip>
 
 	<!--
 		Indeterminate by construction: generative work has no known denominator, and a
 		step-count fraction would move backwards as new steps arrive. Decorative — the
-		adjacent text carries the same information for screen readers.
+		line above carries the same information as text. Terminal states drop the rail
+		entirely rather than parking a full bar under a settled footer.
 	-->
-	<div
-		class="mt-1.5 h-1 w-full rounded-full overflow-hidden bg-gray-200 dark:bg-gray-850"
-		aria-hidden="true"
-	>
-		{#if displayStatus === 'streaming'}
-			<div class="rail-segment h-full w-1/3 rounded-full bg-gray-400 dark:bg-gray-600"></div>
-		{:else if displayStatus === 'complete'}
-			<div class="h-full w-full rounded-full bg-green-500/70"></div>
-		{:else if displayStatus === 'error'}
-			<div class="h-full w-full rounded-full bg-red-500/70"></div>
-		{/if}
-	</div>
-
-	{#if displayStatus === 'starting'}
-		<div class="mt-1.5 shimmer text-gray-500 dark:text-gray-400">
-			{$i18n.t('Preparing session…')}
-		</div>
-	{:else}
-		<div class="mt-1.5 text-gray-500 dark:text-gray-400 tabular-nums">
-			{#if displayStatus === 'error'}
-				{state?.errorMessage ?? $i18n.t('Stream failed')}
-			{:else if workflowDone && !done}
-				<!-- The retrieval trace is finished but the answer is not. Say exactly that. -->
-				{$i18n.t('Retrieval complete · generating answer…')}
+	{#if displayStatus === 'streaming' || displayStatus === 'error'}
+		<div
+			class="mt-1 h-0.5 w-full rounded-full overflow-hidden bg-gray-100 dark:bg-gray-850"
+			aria-hidden="true"
+		>
+			{#if displayStatus === 'streaming'}
+				<div class="rail-segment h-full w-1/3 rounded-full bg-gray-400 dark:bg-gray-600"></div>
 			{:else}
-				{$i18n.t('{{count}} steps complete', { count: completedSteps })}
+				<div class="h-full w-full rounded-full bg-red-500/70"></div>
 			{/if}
 		</div>
 	{/if}
 
-	{#if state?.steps?.length}
-		<ol class="mt-1.5 flex flex-col gap-0.5">
-			{#each state.steps as step (step.id)}
-				<li class="flex items-center gap-1.5 min-w-0">
-					<span
-						class="size-1.5 rounded-full shrink-0 {step.status === 'complete'
-							? 'bg-green-500'
-							: step.status === 'error'
-								? 'bg-red-500'
-								: 'bg-gray-400 dark:bg-gray-600'}"
-						aria-hidden="true"
-					></span>
-					<span
-						class="truncate {step.status === 'running'
-							? 'shimmer'
-							: 'text-gray-600 dark:text-gray-400'}"
-					>
-						{step.label}{step.status === 'running' ? '…' : ''}
-					</span>
-					<span class="sr-only">{stepStatusLabel[step.status]}</span>
-				</li>
-			{/each}
-		</ol>
-	{/if}
+	{#if expanded}
+		<div class="mt-1.5 flex flex-col gap-1.5 text-gray-500 dark:text-gray-400">
+			{#if state?.steps?.length}
+				<ol class="flex flex-col gap-0.5">
+					{#each state.steps as step (step.id)}
+						<li class="flex items-center gap-1.5 min-w-0">
+							<span
+								class="size-1.5 rounded-full shrink-0 {step.status === 'complete'
+									? 'bg-green-500'
+									: step.status === 'error'
+										? 'bg-red-500'
+										: 'bg-gray-400 dark:bg-gray-600'}"
+								aria-hidden="true"
+							></span>
+							<span
+								class="truncate min-w-0 {step.status === 'running'
+									? 'shimmer'
+									: 'text-gray-600 dark:text-gray-400'}"
+							>
+								{step.label}{step.status === 'running' ? '…' : ''}
+							</span>
+							<span class="sr-only">{stepStatusLabel[step.status]}</span>
+						</li>
+					{/each}
+				</ol>
+			{/if}
 
-	<div class="mt-1.5 flex flex-wrap gap-1">
-		{#each Object.entries(state?.metrics ?? {}) as [metricKey, metric] (metricKey)}
-			<span
-				class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-600 dark:text-gray-400 tabular-nums"
-			>
-				{metric.label}
-				{formatMetric(metricKey, metric.value)}
-			</span>
-		{/each}
-		<!--
-			The `~` is the visible approximation marker; a screen reader would read it as
-			"tilde", so it is hidden and the companion text says "approximately" instead.
-		-->
-		<span
-			class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-600 dark:text-gray-400 tabular-nums"
-		>
-			<span aria-hidden="true">~ {formatCompactCount(approxTokens)} {$i18n.t('tokens')}</span>
-			<span class="sr-only"
-				>{$i18n.t('approximately {{count}} tokens', {
-					count: approxTokens
-				})}</span
-			>
-		</span>
-		<span
-			class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-600 dark:text-gray-400 tabular-nums"
-		>
-			{$i18n.t('Elapsed')}
-			{formatElapsed(elapsedMs)}
-		</span>
-	</div>
+			{#if metricSummary.length || showConnection || activeViewers > 1 || session?.status === 'streaming'}
+				<div class="flex flex-wrap items-center gap-x-2 gap-y-1 tabular-nums">
+					{#each metricSummary as entry (entry)}
+						<span>{entry}</span>
+					{/each}
+
+					<!-- Healthy connections say nothing; only trouble is worth the pixels. -->
+					{#if showConnection}
+						<span class="flex items-center gap-1 min-w-0">
+							<span
+								class="size-1.5 rounded-full shrink-0 {$socketStatus === 'reconnecting'
+									? 'bg-amber-500'
+									: 'bg-gray-400 dark:bg-gray-600'}"
+								aria-hidden="true"
+							></span>
+							<span class="truncate">{connectionLabel}</span>
+						</span>
+					{/if}
+
+					<!-- One viewer is the norm and not worth reporting. -->
+					{#if activeViewers > 1}
+						<span>{$i18n.t('{{count}} sessions', { count: activeViewers })}</span>
+					{/if}
+
+					<!--
+						The backend emits 'complete' when the scripted stream ends or is cancelled,
+						which says nothing about the answer — so only the open state is shown.
+					-->
+					{#if session?.status === 'streaming'}
+						<span>{$i18n.t('Session active')}</span>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>

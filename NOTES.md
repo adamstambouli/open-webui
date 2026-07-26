@@ -1,6 +1,6 @@
 # NOTES — Live Session Widget
 
-> Status: implemented and verified in the browser. `npm run test:frontend` — 28 tests green.
+> Status: implemented and verified in the browser. `npm run test:frontend` — 36 tests green.
 
 ## Run
 
@@ -41,6 +41,7 @@ flowchart TB
 - **Continue-response** (Open WebUI reuses the messageId and flips `done` back to false) is the one edge-trigger: observed `true → false` clears state and restarts once. Regenerate mints a new messageId and gets a fresh key for free. `complete`/`error` never auto-restart.
 - **The scripted stream and the answer are two different clocks**, and the widget never conflates them. `widget_done` ends the ~7s retrieval trace; the answer routinely generates for much longer. Only the message's own `done` may show **Complete** or fill the rail — in between, the widget says "Retrieval complete · generating answer…" and keeps the elapsed timer running. Browser testing caught the earlier version claiming **Complete** ~30s early, which is exactly the lie a progress indicator exists to avoid. The state carries both timestamps for the same reason: `finishedAt` (stream) and `endedAt` (generation, and what elapsed measures).
 - **Finishing is level-triggered, not edge-triggered.** Restarting needs an edge — continue-response is only visible as `done` going true → false. Finishing does not: the component asks "generation over and this session unstamped?" on every update, and `finalizeWidget` is write-once so re-running is free. The edge-triggered version missed the transition in the browser and stranded elapsed at the mock's ~6s finish, snapping a 1:43 timer backwards. Level-triggering cannot be defeated by a remount or a coalesced update.
+- **It blends in rather than announcing itself.** No card, no border — one quiet `text-xs` line in the StatusHistory idiom: the current step shimmering with stats parenthesized after it (`Searching research repositories… (2m 21s · ~ 1.2k tokens)`), a hairline indeterminate rail beneath. The step checklist is expanded while streaming, because watching it fill in is the point; on completion the whole thing auto-collapses to one footer (`Complete · 7 sources · 92% confidence (22s · ~ 5.1k tokens)`) that a chevron re-expands. Healthy state is silent: connection appears only when reconnecting or offline, session count only above one.
 - **Widget mounts only for persisted chats.** A brand-new chat has no id until the backend assigns one, and a temporary chat is given `local:{socket.id}` and never persists; streaming against either would 403 with no recovery. The render gate rejects both, so the widget appears a beat after the first send on a new chat and never appears in a temporary one (deliberate cut).
 
 ## Real vs. mocked
@@ -80,13 +81,14 @@ Svelte lifecycle (continue/regenerate/destroy) is deliberately outside vitest (n
 ## Manual verification
 
 1. curl the endpoint (Bearer, `-N`): full script with dupe + malformed; `&scenario=error` → `widget_error`; no token → 401; unowned chat_id → 403.
-2. Send a message → widget above the streaming answer: starting → streaming, steps advance, metrics tick, no glitch at the dupe/malformed frames. When the retrieval trace ends ahead of the answer the line reads "Retrieval complete · generating answer…", the rail stays indeterminate and elapsed keeps running; **Complete** and the full rail appear only when the answer itself finishes, and elapsed holds at the time it showed rather than snapping back to the mock's duration.
-3. Second tab, same chat → both show 2 sessions; close → 1. The "Session active" badge appears while another session's stream is open and disappears when it closes.
-4. Kill backend mid-generation → "reconnecting" (stays — client retries forever); restart → rejoins room, count restored.
-5. Regenerate → fresh widget, siblings intact. Continue → resets and restarts on the same id. Stop → terminal, no zombie updates.
-6. Navigate away mid-stream and back → fresh start (mock replay, accepted); back to a completed message → snapshot renders.
-7. A11y: with reduced motion enabled, indicators go static (opacity-only entrance); VoiceOver announces each status transition once — the elapsed/token tickers stay out of the live region and silent.
-8. `npm run test:frontend` green.
+2. Send a message → widget above the streaming answer: starting → streaming, steps advance, metrics tick, no glitch at the dupe/malformed frames. When the retrieval trace ends ahead of the answer the line reads "Retrieval complete · generating answer…", the rail stays indeterminate and elapsed keeps running; the footer flips to **Complete** only when the answer itself finishes, and elapsed holds at the time it showed rather than snapping back to the mock's duration. Watch the timer for a couple of minutes — the digits should advance one second at a time without skipping.
+3. Collapse and expand via the chevron: no horizontal shift, no scroll jump, no focus loss. Hovering the line shows the same content as text; keyboard and touch use the button instead.
+4. Second tab, same chat → the expanded trace shows 2 sessions; close → the count disappears again (one viewer is the norm and stays silent). The "Session active" badge appears while another session's stream is open.
+5. Kill backend mid-generation → "reconnecting" appears in the trace (and stays — the client retries forever); restart → rejoins room, count restored, indicator goes quiet again.
+6. Regenerate → fresh widget, siblings intact. Continue → resets and restarts on the same id. Stop → terminal, no zombie updates.
+7. Navigate away mid-stream and back → fresh start (mock replay, accepted); back to a completed message → snapshot renders.
+8. A11y: with reduced motion enabled the shimmer and rail go static and the entrance is opacity-only; VoiceOver announces each status transition once — the elapsed/token tickers stay out of the live region and silent, and the token count is heard as "approximately", never "tilde". Check the shimmer in both light and dark themes, since on the collapsed line it _is_ the working indicator.
+9. `npm run test:frontend` green.
 
 ## Production hardening
 
