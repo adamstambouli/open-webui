@@ -30,6 +30,9 @@ export const mobile = writable(false);
 
 export const socket: Writable<null | Socket> = writable(null);
 export const socketConnected: Writable<boolean> = writable(true);
+// Finer-grained than socketConnected: the client retries forever, so a dropped
+// connection is normally 'reconnecting' and only 'offline' once retries give up.
+export const socketStatus: Writable<'connected' | 'reconnecting' | 'offline'> = writable('offline');
 export const activeUserIds: Writable<null | string[]> = writable(null);
 export const activeChatIds: Writable<Set<string>> = writable(new Set());
 export const USAGE_POOL: Writable<null | string[]> = writable(null);

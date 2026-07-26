@@ -20,6 +20,7 @@
 		mobile,
 		socket,
 		socketConnected,
+		socketStatus,
 		chatId,
 		chats,
 		currentChatPage,
@@ -143,6 +144,7 @@
 
 		_socket.on('connect', async () => {
 			console.log('connected', _socket.id);
+			socketStatus.set('connected');
 
 			// Cancel any pending disconnect toast if we reconnected quickly
 			if (disconnectToastTimer) {
@@ -203,17 +205,23 @@
 			}
 		});
 
-		_socket.on('reconnect_attempt', (attempt) => {
+		// Socket.IO v4 fires reconnection events on the Manager, not the Socket —
+		// registered on `_socket` these handlers never ran.
+		_socket.io.on('reconnect_attempt', (attempt) => {
 			console.log('reconnect_attempt', attempt);
+			socketStatus.set('reconnecting');
 		});
 
-		_socket.on('reconnect_failed', () => {
+		_socket.io.on('reconnect_failed', () => {
 			console.log('reconnect_failed');
+			socketStatus.set('offline');
 		});
 
 		_socket.on('disconnect', (reason, details) => {
 			console.log(`Socket ${_socket.id} disconnected due to ${reason}`);
 			socketConnected.set(false);
+			// `active` is true while the Manager still intends to retry.
+			socketStatus.set(_socket.active ? 'reconnecting' : 'offline');
 
 			// Delay showing the disconnect toast so brief interruptions
 			// (e.g. mobile tab backgrounding) don't flash a nuisance warning
