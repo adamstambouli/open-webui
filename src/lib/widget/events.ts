@@ -58,6 +58,73 @@ export const initialWidgetState = (startedAt: number): WidgetState => ({
 
 const STEP_STATUSES: WidgetStepStatus[] = ['running', 'complete', 'error'];
 
+/**
+ * A finished session, persisted onto the message so a reload still shows the trace.
+ * Versioned because it outlives the code that wrote it.
+ */
+export type WidgetSnapshot = WidgetState & { v: 1 };
+
+export const SNAPSHOT_VERSION = 1;
+
+/** Only terminal sessions are worth persisting; an in-flight one would reload as a lie. */
+export const snapshotWidgetState = (state: WidgetState): WidgetSnapshot | null =>
+	isTerminal(state.status) ? { ...state, v: SNAPSHOT_VERSION } : null;
+
+const isFiniteNumber = (value: unknown): value is number =>
+	typeof value === 'number' && Number.isFinite(value);
+
+/**
+ * Reads a snapshot back off a message. Defensive in the same spirit as the SSE parser:
+ * this is user-editable stored JSON from an unknown past version, so it never throws and
+ * returns null for anything it cannot fully vouch for. A rejected snapshot leaves the
+ * widget absent, which is honest; a half-trusted one would render a broken trace.
+ */
+export const hydrateWidgetState = (raw: unknown): WidgetState | null => {
+	if (typeof raw !== 'object' || raw === null) return null;
+	const data = raw as Record<string, unknown>;
+
+	if (data.v !== SNAPSHOT_VERSION) return null;
+	if (data.status !== 'complete' && data.status !== 'error') return null;
+	if (!isFiniteNumber(data.startedAt) || !isFiniteNumber(data.endedAt)) return null;
+	// A session cannot end before it began, and the stream cannot outlast the session.
+	if (data.endedAt < data.startedAt) return null;
+	if (data.finishedAt !== undefined) {
+		if (!isFiniteNumber(data.finishedAt)) return null;
+		if (data.finishedAt < data.startedAt || data.finishedAt > data.endedAt) return null;
+	}
+
+	if (!Array.isArray(data.steps)) return null;
+	const steps: WidgetStep[] = [];
+	for (const entry of data.steps) {
+		if (typeof entry !== 'object' || entry === null) return null;
+		const { id, label, status } = entry as Record<string, unknown>;
+		if (typeof id !== 'string' || typeof label !== 'string') return null;
+		if (!STEP_STATUSES.includes(status as WidgetStepStatus)) return null;
+		steps.push({ id, label, status: status as WidgetStepStatus });
+	}
+
+	if (typeof data.metrics !== 'object' || data.metrics === null || Array.isArray(data.metrics)) {
+		return null;
+	}
+	const metrics: Record<string, WidgetMetric> = {};
+	for (const [metricKey, entry] of Object.entries(data.metrics as Record<string, unknown>)) {
+		if (typeof entry !== 'object' || entry === null) return null;
+		const { label, value } = entry as Record<string, unknown>;
+		if (typeof label !== 'string' || !isFiniteNumber(value)) return null;
+		metrics[metricKey] = { label, value };
+	}
+
+	return {
+		status: data.status,
+		steps,
+		metrics,
+		startedAt: data.startedAt,
+		endedAt: data.endedAt,
+		...(isFiniteNumber(data.finishedAt) ? { finishedAt: data.finishedAt } : {}),
+		...(typeof data.errorMessage === 'string' ? { errorMessage: data.errorMessage } : {})
+	};
+};
+
 /** One decimal place, with JS dropping a trailing `.0` for us (`String(5.0) === '5'`). */
 const oneDecimal = (value: number) => Math.round(value * 10) / 10;
 

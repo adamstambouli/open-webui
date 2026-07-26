@@ -10,9 +10,12 @@
 		formatCompactCount,
 		formatElapsed,
 		isWidgetActive,
+		snapshotWidgetState,
 		widgetDisplayStatus,
 		widgetElapsedMs,
-		widgetKey
+		widgetKey,
+		type WidgetSnapshot,
+		type WidgetState
 	} from '$lib/widget/events';
 	import {
 		chatSessionInfo,
@@ -29,6 +32,8 @@
 	export let done: boolean = false;
 	export let error: unknown = false;
 	export let contentLength: number = 0;
+	/** Persists the finished session onto the message. `(messageId, message) => void`. */
+	export let persistSnapshot: ((snapshot: WidgetSnapshot) => Promise<void>) | null = null;
 
 	// This component owns the request. One controller, one signal: destroying the
 	// component (navigation, chat switch, regenerate) aborts the stream, and nothing
@@ -129,6 +134,34 @@
 
 	$: if (isActive) startTicker();
 	else stopTicker();
+
+	// Persist once per finished session, keyed on its endedAt so continue-response's new
+	// session overwrites the old one and nothing else re-saves. `persistedEndedAt` is set
+	// only after the save resolves, so a failure retries on the next update instead of
+	// being permanently suppressed; `persistingEndedAt` keeps that retry from stacking.
+	let persistingEndedAt: number | null = null;
+	let persistedEndedAt: number | null = null;
+
+	const persistIfNeeded = async (snapshotState: WidgetState | undefined) => {
+		if (!persistSnapshot || !snapshotState?.endedAt) return;
+		const { endedAt } = snapshotState;
+		if (persistedEndedAt === endedAt || persistingEndedAt === endedAt) return;
+
+		const snapshot = snapshotWidgetState(snapshotState);
+		if (!snapshot) return;
+
+		persistingEndedAt = endedAt;
+		try {
+			await persistSnapshot(snapshot);
+			persistedEndedAt = endedAt;
+		} catch (e) {
+			console.error('Failed to persist live session snapshot', e);
+		} finally {
+			persistingEndedAt = null;
+		}
+	};
+
+	$: if (mounted) persistIfNeeded(state);
 
 	$: elapsedMs = widgetElapsedMs(state, isActive, now);
 	$: approxTokens = Math.round((contentLength ?? 0) / 4);

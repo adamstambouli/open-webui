@@ -1,6 +1,6 @@
 # NOTES — Live Session Widget
 
-> Status: implemented and verified in the browser. `npm run test:frontend` — 36 tests green.
+> Status: implemented and verified in the browser. `npm run test:frontend` — 40 tests green.
 
 ## Run
 
@@ -42,6 +42,7 @@ flowchart TB
 - **The scripted stream and the answer are two different clocks**, and the widget never conflates them. `widget_done` ends the ~7s retrieval trace; the answer routinely generates for much longer. Only the message's own `done` may show **Complete** or fill the rail — in between, the widget says "Retrieval complete · generating answer…" and keeps the elapsed timer running. Browser testing caught the earlier version claiming **Complete** ~30s early, which is exactly the lie a progress indicator exists to avoid. The state carries both timestamps for the same reason: `finishedAt` (stream) and `endedAt` (generation, and what elapsed measures).
 - **Finishing is level-triggered, not edge-triggered.** Restarting needs an edge — continue-response is only visible as `done` going true → false. Finishing does not: the component asks "generation over and this session unstamped?" on every update, and `finalizeWidget` is write-once so re-running is free. The edge-triggered version missed the transition in the browser and stranded elapsed at the mock's ~6s finish, snapping a 1:43 timer backwards. Level-triggering cannot be defeated by a remount or a coalesced update.
 - **It blends in rather than announcing itself.** No card, no border — one quiet `text-xs` line in the StatusHistory idiom: the current step shimmering with stats parenthesized after it (`Searching research repositories… (2m 21s · ~ 1.2k tokens)`), a hairline indeterminate rail beneath. The step checklist is expanded while streaming, because watching it fill in is the point; on completion the whole thing auto-collapses to one footer (`Complete · 7 sources · 92% confidence (22s · ~ 5.1k tokens)`) that a chevron re-expands. Healthy state is silent: connection appears only when reconnecting or offline, session count only above one.
+- **Finished sessions survive a reload.** The terminal state is snapshotted onto the message as `liveSession` — schemaless additive field, following the `statusHistory`/`usage` precedent — and versioned, because stored data outlives the code that wrote it. Writing is explicit: nested mutation of `history.messages` schedules no save, so the component hands the snapshot up to `saveMessage`, once per session and keyed on `endedAt`, marking success only after the save resolves so a failure retries rather than being swallowed. Reading is defensive in the same spirit as the SSE parser: `hydrateWidgetState` accepts only version 1, only terminal statuses, and only finite, correctly ordered timestamps. Anything else yields no widget at all, which beats a widget stranded on "Starting".
 - **Widget mounts only for persisted chats.** A brand-new chat has no id until the backend assigns one, and a temporary chat is given `local:{socket.id}` and never persists; streaming against either would 403 with no recovery. The render gate rejects both, so the widget appears a beat after the first send on a new chat and never appears in a temporary one (deliberate cut).
 
 ## Real vs. mocked
@@ -69,7 +70,7 @@ The endpoint's four gates (401 without a token, 403 for a chat the caller does n
 
 Built test-first: parser/reducer and store suites written before their implementations, then used as the regression gate for backend and integration phases. `npm run test:frontend` (vitest, `environment: 'node'`, no new deps).
 
-- `events.test.ts` — frames split across chunk boundaries, malformed JSON, duplicate-step idempotence, step/metric upserts, done/error + post-terminal deltas ignored; plus the two derivations that decide what the user sees: displayed status (a finished stream is not a finished answer) and elapsed time (measured against the generation, never the stream).
+- `events.test.ts` — snapshot round-trip plus every rejection path (wrong version, non-terminal status, disordered timestamps, malformed steps/metrics); compact-count and duration formatting including the suffix-promotion boundary; frames split across chunk boundaries, malformed JSON, duplicate-step idempotence, step/metric upserts, done/error + post-terminal deltas ignored; plus the two derivations that decide what the user sees: displayed status (a finished stream is not a finished answer) and elapsed time (measured against the generation, never the stream).
 - `store.test.ts` — happy stream reaches `complete` (malformed frame mid-stream, no corruption); abort stops all further writes and `clearWidgetIfActive` drops the partial; an already-aborted signal never even fetches; wrong-messageId events ignored; non-ok responses become `error`; `reset` restarts a finished key and clears `endedAt`; finalizing stamps `endedAt` without touching the stream's own `finishedAt`, is write-once under repeated calls, and never rewrites a stream error as success.
 
 Both suites were mutation-tested: deliberately breaking the terminal guard, the step dedup, the status validation, the messageId filter, the clear-if-active guard, and each of the two display derivations turned a suite red, so the assertions are load-bearing rather than incidental.
@@ -87,8 +88,9 @@ Svelte lifecycle (continue/regenerate/destroy) is deliberately outside vitest (n
 5. Kill backend mid-generation → "reconnecting" appears in the trace (and stays — the client retries forever); restart → rejoins room, count restored, indicator goes quiet again.
 6. Regenerate → fresh widget, siblings intact. Continue → resets and restarts on the same id. Stop → terminal, no zombie updates.
 7. Navigate away mid-stream and back → fresh start (mock replay, accepted); back to a completed message → snapshot renders.
-8. A11y: with reduced motion enabled the shimmer and rail go static and the entrance is opacity-only; VoiceOver announces each status transition once — the elapsed/token tickers stay out of the live region and silent, and the token count is heard as "approximately", never "tilde". Check the shimmer in both light and dark themes, since on the collapsed line it _is_ the working indicator.
-9. `npm run test:frontend` green.
+8. Persistence: complete a message → reload the page → the trace is still there, no "Starting" flash. Continue → complete → reload (the newer session wins). Regenerate → fresh widget, the sibling's stored snapshot untouched. Hand-edit `liveSession` in the stored chat JSON to something malformed → the widget is simply absent, nothing crashes.
+9. A11y: with reduced motion enabled the shimmer and rail go static and the entrance is opacity-only; VoiceOver announces each status transition once — the elapsed/token tickers stay out of the live region and silent, and the token count is heard as "approximately", never "tilde". Check the shimmer in both light and dark themes, since on the collapsed line it _is_ the working indicator.
+10. `npm run test:frontend` green.
 
 ## Production hardening
 

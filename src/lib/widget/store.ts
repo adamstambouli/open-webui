@@ -140,6 +140,15 @@ export const finalizeWidget = (
 	});
 };
 
+/**
+ * Puts a validated snapshot back into the store on reload, without disturbing a session
+ * that is already there — live state and a fresh restart both outrank stored history.
+ */
+export const seedWidgetState = (chatId: string, messageId: string, state: WidgetState) => {
+	const key = widgetKey(chatId, messageId);
+	widgetStates.update((states) => (states[key] ? states : { ...states, [key]: state }));
+};
+
 /** Drops in-flight state on destroy; finished snapshots survive for navigate-back. */
 export const clearWidgetIfActive = (chatId: string, messageId: string) => {
 	const key = widgetKey(chatId, messageId);

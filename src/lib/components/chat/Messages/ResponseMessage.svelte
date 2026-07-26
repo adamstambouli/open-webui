@@ -64,8 +64,8 @@
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
 	import LiveSessionWidget from './ResponseMessage/LiveSessionWidget.svelte';
-	import { widgetKey } from '$lib/widget/events';
-	import { widgetStates } from '$lib/widget/store';
+	import { hydrateWidgetState, widgetKey, type WidgetSnapshot } from '$lib/widget/events';
+	import { seedWidgetState, widgetStates } from '$lib/widget/store';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 	import OutputEditView from './OutputEditView.svelte';
 	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
@@ -94,6 +94,8 @@
 		};
 		done: boolean;
 		error?: boolean | { content: string };
+		/** Persisted live-session trace; schemaless additive field, like statusHistory. */
+		liveSession?: WidgetSnapshot;
 		sources?: string[];
 		code_executions?: {
 			uuid: string;
@@ -187,6 +189,23 @@
 		!(statusEntries.at(-1)?.hidden ?? false);
 	$: visibleResponseContent =
 		getOutputText(message.output) || removeAllDetails(message.content ?? '');
+
+	// Only a snapshot that fully validates counts. Gating the widget on the raw field
+	// would mount it with no state for a malformed one, stranding it on "Starting"
+	// forever; absent is the honest outcome. Ignored while `done` is false, since a
+	// continue-response in flight must be allowed to restart its stream.
+	$: liveSessionSnapshot = message.done ? hydrateWidgetState(message.liveSession) : null;
+	$: if (liveSessionSnapshot && chatId) {
+		// Seed eagerly rather than in onMount, so a reload paints the trace immediately
+		// instead of flashing "Starting". seedWidgetState yields to any live session.
+		seedWidgetState(chatId, message.id, liveSessionSnapshot);
+	}
+
+	const persistLiveSession = async (snapshot: WidgetSnapshot) => {
+		// Nested mutation of history.messages does not schedule a save, so this goes
+		// through saveMessage explicitly with an immutably updated message.
+		await saveMessage(message.id, { ...message, liveSession: snapshot });
+	};
 	$: hasResponseContent = Boolean((message.content ?? '').trim() || message.output?.length);
 
 	let edit = false;
@@ -702,13 +721,14 @@
 							the widget waits: on a new chat it appears once the real id lands, and on a
 							temporary chat it never appears at all (deliberate cut).
 						-->
-						{#if dev && chatId && !chatId.startsWith('local:') && (message.done === false || $widgetStates[widgetKey(chatId, message.id)])}
+						{#if dev && chatId && !chatId.startsWith('local:') && (message.done === false || $widgetStates[widgetKey(chatId, message.id)] || liveSessionSnapshot)}
 							<LiveSessionWidget
 								{chatId}
 								messageId={message.id}
 								done={message.done}
 								error={message.error}
 								contentLength={visibleResponseContent.length}
+								persistSnapshot={persistLiveSession}
 							/>
 						{/if}
 

@@ -4,8 +4,10 @@ import {
 	formatCompactCount,
 	formatElapsed,
 	getSSEEventReader,
+	hydrateWidgetState,
 	initialWidgetState,
 	isWidgetActive,
+	snapshotWidgetState,
 	parseWidgetEvent,
 	widgetDisplayStatus,
 	widgetElapsedMs,
@@ -111,6 +113,63 @@ describe('parseWidgetEvent', () => {
 
 		for (const [name, data] of bad) {
 			expect(parseWidgetEvent(name, data), `${name} / ${data}`).toBeNull();
+		}
+	});
+});
+
+describe('snapshotWidgetState / hydrateWidgetState', () => {
+	const finished: WidgetState = {
+		status: 'complete',
+		steps: [
+			{ id: 'parse', label: 'Parsing request', status: 'complete' },
+			{ id: 'rank', label: 'Ranking passages', status: 'complete' }
+		],
+		metrics: { sources: { label: 'Sources', value: 7 } },
+		startedAt: 1_000,
+		finishedAt: 7_800,
+		endedAt: 34_400
+	};
+
+	it('round-trips a finished session through JSON', () => {
+		const snapshot = snapshotWidgetState(finished);
+		expect(snapshot?.v).toBe(1);
+
+		// Stored on the message, so it makes the trip through serialization.
+		expect(hydrateWidgetState(JSON.parse(JSON.stringify(snapshot)))).toEqual(finished);
+	});
+
+	it('round-trips an errored session including its message', () => {
+		const errored: WidgetState = { ...finished, status: 'error', errorMessage: 'Backend down' };
+		expect(hydrateWidgetState(snapshotWidgetState(errored))).toEqual(errored);
+	});
+
+	it('refuses to snapshot a session that is still running', () => {
+		expect(snapshotWidgetState({ ...finished, status: 'streaming' })).toBeNull();
+		expect(snapshotWidgetState({ ...finished, status: 'starting' })).toBeNull();
+	});
+
+	it('rejects anything it cannot fully vouch for', () => {
+		const snapshot = snapshotWidgetState(finished);
+		const cases: [string, unknown][] = [
+			['not an object', 'nope'],
+			['null', null],
+			['no version', { ...snapshot, v: undefined }],
+			['future version', { ...snapshot, v: 2 }],
+			['non-terminal status', { ...snapshot, status: 'streaming' }],
+			['unknown status', { ...snapshot, status: 'paused' }],
+			['missing endedAt', { ...snapshot, endedAt: undefined }],
+			['non-finite timestamp', { ...snapshot, endedAt: Number.NaN }],
+			['ended before it started', { ...snapshot, startedAt: 40_000 }],
+			['stream outlasting the session', { ...snapshot, finishedAt: 40_000 }],
+			['steps not an array', { ...snapshot, steps: {} }],
+			['step missing a label', { ...snapshot, steps: [{ id: 'a', status: 'complete' }] }],
+			['step with a bogus status', { ...snapshot, steps: [{ id: 'a', label: 'A', status: 'x' }] }],
+			['metrics as an array', { ...snapshot, metrics: [] }],
+			['metric with a text value', { ...snapshot, metrics: { s: { label: 'S', value: '7' } } }]
+		];
+
+		for (const [name, value] of cases) {
+			expect(hydrateWidgetState(value), name).toBeNull();
 		}
 	});
 });
