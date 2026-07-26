@@ -483,6 +483,65 @@ async def join_note(sid, data):
     await sio.enter_room(sid, f'note:{note.id}')
 
 
+CHAT_ROOM_PREFIX = 'chat:'
+
+
+async def broadcast_chat_presence(chat_id: str, exclude_sid: str | None = None):
+    """Tell a chat room how many sessions are currently viewing it.
+
+    Sessions, not users: the same person with two tabs open is two viewers, which is
+    the meaningful number for a single-user chat. Membership is node-local — multi-node
+    presence would need shared room state.
+    """
+    room = f'{CHAT_ROOM_PREFIX}{chat_id}'
+    session_ids = [sid for sid in get_session_ids_from_room(room) if sid != exclude_sid]
+    await sio.emit(
+        'chat-session-event',
+        {'type': 'presence', 'chatId': chat_id, 'activeViewers': len(session_ids)},
+        room=room,
+    )
+
+
+async def broadcast_chat_session_status(chat_id: str, status: str):
+    """Tell a chat room that a generation session started ('streaming') or ended ('complete')."""
+    await sio.emit(
+        'chat-session-event',
+        {'type': 'session_status', 'chatId': chat_id, 'status': status},
+        room=f'{CHAT_ROOM_PREFIX}{chat_id}',
+    )
+
+
+@sio.on('join-chat')
+async def join_chat(sid, data):
+    user = SESSION_POOL.get(sid)
+    if not user:
+        return
+
+    chat_id = (data or {}).get('chat_id')
+    if not chat_id:
+        return
+
+    if not await Chats.is_chat_owner(chat_id, user['id']):
+        log.warning(f'User {user["id"]} tried to join chat room {chat_id} without owning it')
+        return
+
+    await sio.enter_room(sid, f'{CHAT_ROOM_PREFIX}{chat_id}')
+    await broadcast_chat_presence(chat_id)
+
+
+@sio.on('leave-chat')
+async def leave_chat(sid, data):
+    if not SESSION_POOL.get(sid):
+        return
+
+    chat_id = (data or {}).get('chat_id')
+    if not chat_id:
+        return
+
+    await sio.leave_room(sid, f'{CHAT_ROOM_PREFIX}{chat_id}')
+    await broadcast_chat_presence(chat_id)
+
+
 @sio.on('events:channel')
 async def channel_events(sid, data):
     room = f'channel:{data["channel_id"]}'
@@ -831,6 +890,19 @@ async def disconnect(sid, reason=None):
     if sid in SESSION_POOL:
         user = SESSION_POOL[sid]
         del SESSION_POOL[sid]
+
+        # Browsers never say goodbye — refresh viewer counts for any chat rooms this
+        # session was in, excluding itself since the room is torn down after us.
+        chat_ids = [
+            room.removeprefix(CHAT_ROOM_PREFIX)
+            for room in (sio.rooms(sid) or [])
+            if room.startswith(CHAT_ROOM_PREFIX)
+        ]
+        for chat_id in chat_ids:
+            try:
+                await broadcast_chat_presence(chat_id, exclude_sid=sid)
+            except Exception as e:
+                log.warning(f'Failed to broadcast presence for chat {chat_id}: {e}')
 
         # Clean up USAGE_POOL entries for this session
         for model_id in list(USAGE_POOL.keys()):
