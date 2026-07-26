@@ -538,7 +538,13 @@ async def leave_chat(sid, data):
     if not chat_id:
         return
 
-    await sio.leave_room(sid, f'{CHAT_ROOM_PREFIX}{chat_id}')
+    # Only a session that is actually in the room may leave it — otherwise any
+    # authenticated client could make us broadcast into arbitrary chat rooms.
+    room = f'{CHAT_ROOM_PREFIX}{chat_id}'
+    if room not in (sio.rooms(sid) or []):
+        return
+
+    await sio.leave_room(sid, room)
     await broadcast_chat_presence(chat_id)
 
 

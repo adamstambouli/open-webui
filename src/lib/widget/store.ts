@@ -47,10 +47,11 @@ export const runWidgetStream = async (
 			if (!current) return states;
 			const next = update(current);
 			if (next === current) return states;
-			if (isTerminal(next.status) && next.finishedAt === undefined) {
-				next.finishedAt = Date.now();
-			}
-			return { ...states, [key]: next };
+			const stamped =
+				isTerminal(next.status) && next.finishedAt === undefined
+					? { ...next, finishedAt: Date.now() }
+					: next;
+			return { ...states, [key]: stamped };
 		});
 	};
 
@@ -128,7 +129,8 @@ export const clearWidgetIfActive = (chatId: string, messageId: string) => {
 	widgetStates.update((states) => {
 		const current = states[key];
 		if (!current || isTerminal(current.status)) return states;
-		const { [key]: _dropped, ...rest } = states;
-		return rest;
+		const next = { ...states };
+		delete next[key];
+		return next;
 	});
 };
