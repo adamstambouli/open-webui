@@ -32,7 +32,7 @@
 	export let done: boolean = false;
 	export let error: unknown = false;
 	export let contentLength: number = 0;
-	/** Persists the finished session onto the message. `(messageId, message) => void`. */
+	/** Persists the finished session onto the message; rejects if the save fails. */
 	export let persistSnapshot: ((snapshot: WidgetSnapshot) => Promise<void>) | null = null;
 
 	// This component owns the request. One controller, one signal: destroying the
@@ -104,10 +104,8 @@
 	$: state = $widgetStates[key];
 	$: session = $chatSessionInfo[chatId];
 
-	// Two clocks, deliberately not conflated. `streamStatus` belongs to the scripted
-	// side channel, which ends at `widget_done`; the answer frequently generates for
-	// far longer. Only the message's own `done` may claim the session is complete —
-	// otherwise the widget announces "Complete" with half the answer still arriving.
+	// Two clocks: `streamStatus` is the scripted side channel, `done` is the answer.
+	// See widgetDisplayStatus for why only the latter may claim completion.
 	$: errored = !!error;
 	$: streamStatus = state?.status ?? 'starting';
 	$: workflowDone = streamStatus === 'complete';
@@ -117,16 +115,11 @@
 	// All lifecycle logic waits for mount so SSR and pre-mount updates do nothing.
 	$: if (mounted) syncRestart(done);
 
-	// Level-triggered, deliberately not edge-triggered: whenever generation has ended
-	// and this session is still unstamped, stamp it. finalizeWidget is write-once, so
-	// re-running is harmless — and unlike edge detection, this cannot be defeated by a
-	// remount or a coalesced update that hides the moment `done` flipped. Getting that
-	// wrong stranded the elapsed timer at the mock's ~6s finish.
+	// Level-triggered rather than watching for the `done` edge, which a remount or a
+	// coalesced update can hide. finalizeWidget is write-once, so re-running is free.
 	$: if (mounted && state && state.endedAt === undefined && (done || errored)) {
-		// Stamp the clock before writing the store. This effect's own store write is not
-		// visible to `state` until a later pass, so the elapsed value computed in between
-		// must come from `now` — otherwise the timer renders from a state that has no
-		// end yet and snaps backwards for as long as nothing else invalidates.
+		// Before the store write, since it is not visible to `state` until a later pass
+		// and elapsed must read a fresh clock in the meantime.
 		now = Date.now();
 		controller?.abort();
 		finalizeWidget(chatId, messageId, errored ? 'error' : 'complete');

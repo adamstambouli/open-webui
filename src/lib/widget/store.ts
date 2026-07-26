@@ -110,15 +110,10 @@ export const runWidgetStream = async (
 };
 
 /**
- * Records that the generation itself ended, which is what the elapsed timer measures —
- * the scripted stream's own `finishedAt` lands far earlier and must not be mistaken
- * for it.
- *
- * Write-once and safe to call repeatedly, so callers can drive it from a level-triggered
- * check ("generation is done and this is unstamped") rather than from catching a single
- * done-transition. Missing one edge would otherwise strand the elapsed time permanently.
- *
- * An existing terminal status wins: a stream that errored is not rewritten as complete.
+ * Records that the generation ended — what elapsed measures, and much later than the
+ * stream's own `finishedAt`. Write-once, so a level-triggered caller can re-run it
+ * freely. An existing terminal status wins: an errored stream is never rewritten as
+ * complete.
  */
 export const finalizeWidget = (
 	chatId: string,

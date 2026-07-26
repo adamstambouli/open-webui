@@ -177,11 +177,9 @@ export const isWidgetActive = (displayStatus: WidgetStatus) =>
  * How long the session has run. While active it tracks `now`; once ended it uses
  * `endedAt`, the generation's end.
  *
- * It deliberately never falls back to `finishedAt`. That is the scripted stream's end,
- * and reaching for it whenever `endedAt` had not yet propagated displayed a 33s session
- * as 6s — the timer visibly jumping backwards at the moment generation completed.
- * Falling back to `now` is correct in exactly that window, because the session is only
- * unstamped while it is still ending.
+ * Never falls back to `finishedAt` — that is the stream's end, and using it while
+ * `endedAt` was still propagating displayed a 33s session as 6s. `now` is the correct
+ * fallback there, since a session is only unstamped while it is still ending.
  */
 export const widgetElapsedMs = (
 	state: WidgetState | undefined,
