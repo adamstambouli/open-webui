@@ -26,11 +26,22 @@ export type WidgetEvent =
 	| { kind: 'error'; messageId: string; message: string };
 
 export type WidgetState = {
+	/**
+	 * Status of the scripted side channel, NOT of the answer. `widget_done` ends the
+	 * stream; the model usually keeps generating well past it, so the component decides
+	 * what the user is told — only the message's own `done` may claim "complete".
+	 */
 	status: WidgetStatus;
 	steps: WidgetStep[];
 	metrics: Record<string, WidgetMetric>;
 	startedAt: number;
+	/** When the scripted stream stopped producing frames. */
 	finishedAt?: number;
+	/**
+	 * When the generation itself ended — the session's real end, and what elapsed time
+	 * is measured against. Usually much later than `finishedAt`. Write-once.
+	 */
+	endedAt?: number;
 	errorMessage?: string;
 };
 
@@ -46,6 +57,44 @@ export const initialWidgetState = (startedAt: number): WidgetState => ({
 });
 
 const STEP_STATUSES: WidgetStepStatus[] = ['running', 'complete', 'error'];
+
+/**
+ * What the user is told — not the same thing as what the stream is doing. The scripted
+ * stream ends at `widget_done`, routinely long before the answer does, so only the
+ * message's own `done` may report completion. In the gap the session is still streaming.
+ */
+export const widgetDisplayStatus = (
+	streamStatus: WidgetStatus,
+	done: boolean,
+	errored: boolean
+): WidgetStatus => {
+	if (streamStatus === 'error' || errored) return 'error';
+	if (done) return 'complete';
+	return streamStatus === 'complete' ? 'streaming' : streamStatus;
+};
+
+export const isWidgetActive = (displayStatus: WidgetStatus) =>
+	displayStatus === 'starting' || displayStatus === 'streaming';
+
+/**
+ * How long the session has run. While active it tracks `now`; once ended it uses
+ * `endedAt`, the generation's end.
+ *
+ * It deliberately never falls back to `finishedAt`. That is the scripted stream's end,
+ * and reaching for it whenever `endedAt` had not yet propagated displayed a 33s session
+ * as 6s — the timer visibly jumping backwards at the moment generation completed.
+ * Falling back to `now` is correct in exactly that window, because the session is only
+ * unstamped while it is still ending.
+ */
+export const widgetElapsedMs = (
+	state: WidgetState | undefined,
+	active: boolean,
+	now: number
+): number => {
+	if (!state) return 0;
+	const endedAt = active ? now : (state.endedAt ?? now);
+	return Math.max(0, endedAt - state.startedAt);
+};
 
 /**
  * Reader over an SSE response body. Extracted so the transport layer is one call and

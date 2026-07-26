@@ -109,7 +109,17 @@ export const runWidgetStream = async (
 	}
 };
 
-/** Settles a widget the generation already finished. No-op if it is gone or terminal. */
+/**
+ * Records that the generation itself ended, which is what the elapsed timer measures —
+ * the scripted stream's own `finishedAt` lands far earlier and must not be mistaken
+ * for it.
+ *
+ * Write-once and safe to call repeatedly, so callers can drive it from a level-triggered
+ * check ("generation is done and this is unstamped") rather than from catching a single
+ * done-transition. Missing one edge would otherwise strand the elapsed time permanently.
+ *
+ * An existing terminal status wins: a stream that errored is not rewritten as complete.
+ */
 export const finalizeWidget = (
 	chatId: string,
 	messageId: string,
@@ -118,8 +128,15 @@ export const finalizeWidget = (
 	const key = widgetKey(chatId, messageId);
 	widgetStates.update((states) => {
 		const current = states[key];
-		if (!current || isTerminal(current.status)) return states;
-		return { ...states, [key]: { ...current, status, finishedAt: Date.now() } };
+		if (!current || current.endedAt !== undefined) return states;
+		return {
+			...states,
+			[key]: {
+				...current,
+				status: isTerminal(current.status) ? current.status : status,
+				endedAt: Date.now()
+			}
+		};
 	});
 };
 

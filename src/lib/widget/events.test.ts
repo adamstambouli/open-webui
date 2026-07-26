@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	getSSEEventReader,
 	initialWidgetState,
+	isWidgetActive,
 	parseWidgetEvent,
+	widgetDisplayStatus,
+	widgetElapsedMs,
 	widgetKey,
 	widgetReducer,
 	type WidgetEvent,
@@ -107,6 +110,67 @@ describe('parseWidgetEvent', () => {
 		for (const [name, data] of bad) {
 			expect(parseWidgetEvent(name, data), `${name} / ${data}`).toBeNull();
 		}
+	});
+});
+
+// These two derive what the user actually sees. Both regressed while they lived inline
+// in the component, where nothing could test them, so they live here now.
+describe('widgetDisplayStatus', () => {
+	it('does not report complete just because the scripted stream ended', () => {
+		// The stream finishes in ~7s; the answer often needs far longer. Claiming
+		// "complete" here showed Complete ~30s before the answer stopped arriving.
+		expect(widgetDisplayStatus('complete', false, false)).toBe('streaming');
+		expect(isWidgetActive(widgetDisplayStatus('complete', false, false))).toBe(true);
+	});
+
+	it('reports complete only once the generation is done', () => {
+		expect(widgetDisplayStatus('complete', true, false)).toBe('complete');
+		expect(widgetDisplayStatus('streaming', true, false)).toBe('complete');
+		expect(isWidgetActive('complete')).toBe(false);
+	});
+
+	it('lets either the stream or the message raise an error', () => {
+		expect(widgetDisplayStatus('error', false, false)).toBe('error');
+		expect(widgetDisplayStatus('streaming', false, true)).toBe('error');
+		expect(widgetDisplayStatus('complete', true, true)).toBe('error');
+	});
+
+	it('passes through the pre-terminal statuses untouched', () => {
+		expect(widgetDisplayStatus('starting', false, false)).toBe('starting');
+		expect(widgetDisplayStatus('streaming', false, false)).toBe('streaming');
+	});
+});
+
+describe('widgetElapsedMs', () => {
+	const ended: WidgetState = {
+		status: 'complete',
+		steps: [],
+		metrics: {},
+		startedAt: 1_000,
+		finishedAt: 7_800, // the scripted stream stopped here
+		endedAt: 34_400 // the generation stopped here
+	};
+
+	it('measures the generation, never the scripted stream', () => {
+		expect(widgetElapsedMs(ended, false, 99_000)).toBe(33_400);
+	});
+
+	it('falls back to now — not to the stream — while the end is still propagating', () => {
+		// The instant generation stops, the store write has not reached this state yet.
+		// Reaching for finishedAt here is what displayed a 33s session as 6s.
+		const unstamped: WidgetState = { ...ended, endedAt: undefined };
+		expect(widgetElapsedMs(unstamped, false, 34_400)).toBe(33_400);
+	});
+
+	it('tracks now while the session is still running', () => {
+		expect(widgetElapsedMs({ ...ended, endedAt: undefined }, true, 21_000)).toBe(20_000);
+		// An already-stamped end is ignored while active — continue-response restarts.
+		expect(widgetElapsedMs(ended, true, 40_000)).toBe(39_000);
+	});
+
+	it('is zero without state and never negative', () => {
+		expect(widgetElapsedMs(undefined, true, 5_000)).toBe(0);
+		expect(widgetElapsedMs(ended, true, 0)).toBe(0);
 	});
 });
 

@@ -708,7 +708,7 @@
 								messageId={message.id}
 								done={message.done}
 								error={message.error}
-								contentLength={message.content?.length ?? 0}
+								contentLength={visibleResponseContent.length}
 							/>
 						{/if}
 

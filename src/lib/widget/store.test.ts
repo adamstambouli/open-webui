@@ -195,10 +195,78 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 		});
 		finalizeWidget('c1', 'm1', 'complete');
 		expect(get(widgetStates)[KEY].status).toBe('complete');
-		expect(get(widgetStates)[KEY].finishedAt).toBeDefined();
+		expect(get(widgetStates)[KEY].endedAt).toBeDefined();
 
 		finalizeWidget('c1', 'm1', 'error'); // already terminal — must not downgrade
 		expect(get(widgetStates)[KEY].status).toBe('complete');
+	});
+
+	it('stamps endedAt separately from the stream, which finished much earlier', () => {
+		// The scripted stream ends at widget_done; the answer keeps going for far longer,
+		// and it is the generation ending that ends the session and stops the timer.
+		widgetStates.set({
+			[KEY]: { status: 'complete', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+		});
+
+		finalizeWidget('c1', 'm1', 'complete');
+
+		const state = get(widgetStates)[KEY];
+		expect(state.status).toBe('complete');
+		expect(state.finishedAt).toBe(2); // the stream's own end is left alone
+		expect(state.endedAt).toBeGreaterThan(2);
+	});
+
+	it('is write-once, so a level-triggered caller can re-run it safely', () => {
+		// The component checks "generation done and unstamped?" on every update rather
+		// than trying to catch the single moment `done` flips — so this runs repeatedly.
+		widgetStates.set({
+			[KEY]: { status: 'complete', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+		});
+
+		finalizeWidget('c1', 'm1', 'complete');
+		const first = get(widgetStates)[KEY].endedAt;
+
+		finalizeWidget('c1', 'm1', 'complete');
+		finalizeWidget('c1', 'm1', 'error');
+
+		expect(get(widgetStates)[KEY].endedAt).toBe(first);
+		expect(get(widgetStates)[KEY].status).toBe('complete');
+	});
+
+	it('keeps a stream error even when the generation ends cleanly', () => {
+		widgetStates.set({
+			[KEY]: { status: 'error', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+		});
+
+		finalizeWidget('c1', 'm1', 'complete');
+
+		expect(get(widgetStates)[KEY].status).toBe('error');
+	});
+
+	it('clears endedAt when a reset restarts the same key', async () => {
+		// Continue-response restarts the session; the previous end must not linger and
+		// freeze the timer at the old duration.
+		const source = controllableStream();
+		stubFetch({ ok: true, body: source.stream });
+		widgetStates.set({
+			[KEY]: {
+				status: 'complete',
+				steps: [],
+				metrics: {},
+				startedAt: 1,
+				finishedAt: 2,
+				endedAt: 3
+			}
+		});
+
+		const done = runWidgetStream('c1', 'm1', 'tok', new AbortController().signal, { reset: true });
+		await flush();
+
+		expect(get(widgetStates)[KEY].endedAt).toBeUndefined();
+
+		source.push(frame('widget_done', { messageId: 'm1' }));
+		source.close();
+		await done;
 	});
 
 	it('keeps terminal snapshots when clearing', () => {

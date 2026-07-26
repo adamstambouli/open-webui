@@ -4,7 +4,12 @@
 	import type { i18n as i18nType } from 'i18next';
 
 	import { socketStatus } from '$lib/stores';
-	import { widgetKey } from '$lib/widget/events';
+	import {
+		isWidgetActive,
+		widgetDisplayStatus,
+		widgetElapsedMs,
+		widgetKey
+	} from '$lib/widget/events';
 	import {
 		chatSessionInfo,
 		clearWidgetIfActive,
@@ -28,7 +33,6 @@
 	let mounted = false;
 	let entered = false;
 	let prevDone = done;
-	let prevErrored = !!error;
 
 	let ticker: ReturnType<typeof setInterval> | null = null;
 	let now = Date.now();
@@ -49,22 +53,20 @@
 		if (!ticker) return;
 		clearInterval(ticker);
 		ticker = null;
+		// Freeze on the moment the session stopped, not up to a second before it.
+		now = Date.now();
 	};
 
 	/**
-	 * Continue-response reuses the messageId and flips `done` back to false, so a
-	 * true -> false transition is the one edge that restarts a stream. The opposite
-	 * transition means generation finished while we were still streaming the mock.
+	 * Restarting genuinely needs an edge: continue-response reuses the messageId and
+	 * flips `done` back to false, and only that true -> false transition may restart a
+	 * stream. Finishing does NOT use an edge — see the level-triggered check below.
 	 */
-	const syncGeneration = (isDone: boolean, errored: boolean) => {
+	const syncRestart = (isDone: boolean) => {
 		if (prevDone && !isDone) {
 			start(true);
-		} else if ((!prevDone && isDone) || (!prevErrored && errored)) {
-			controller?.abort();
-			finalizeWidget(chatId, messageId, errored ? 'error' : 'complete');
 		}
 		prevDone = isDone;
-		prevErrored = errored;
 	};
 
 	onMount(() => {
@@ -86,15 +88,39 @@
 	$: key = widgetKey(chatId, messageId);
 	$: state = $widgetStates[key];
 	$: session = $chatSessionInfo[chatId];
-	$: status = state?.status ?? 'starting';
-	$: isActive = status === 'starting' || status === 'streaming';
 
-	// All transition logic waits for mount so SSR and pre-mount updates do nothing.
-	$: if (mounted) syncGeneration(done, !!error);
+	// Two clocks, deliberately not conflated. `streamStatus` belongs to the scripted
+	// side channel, which ends at `widget_done`; the answer frequently generates for
+	// far longer. Only the message's own `done` may claim the session is complete —
+	// otherwise the widget announces "Complete" with half the answer still arriving.
+	$: errored = !!error;
+	$: streamStatus = state?.status ?? 'starting';
+	$: workflowDone = streamStatus === 'complete';
+	$: displayStatus = widgetDisplayStatus(streamStatus, done, errored);
+	$: isActive = isWidgetActive(displayStatus);
+
+	// All lifecycle logic waits for mount so SSR and pre-mount updates do nothing.
+	$: if (mounted) syncRestart(done);
+
+	// Level-triggered, deliberately not edge-triggered: whenever generation has ended
+	// and this session is still unstamped, stamp it. finalizeWidget is write-once, so
+	// re-running is harmless — and unlike edge detection, this cannot be defeated by a
+	// remount or a coalesced update that hides the moment `done` flipped. Getting that
+	// wrong stranded the elapsed timer at the mock's ~6s finish.
+	$: if (mounted && state && state.endedAt === undefined && (done || errored)) {
+		// Stamp the clock before writing the store. This effect's own store write is not
+		// visible to `state` until a later pass, so the elapsed value computed in between
+		// must come from `now` — otherwise the timer renders from a state that has no
+		// end yet and snaps backwards for as long as nothing else invalidates.
+		now = Date.now();
+		controller?.abort();
+		finalizeWidget(chatId, messageId, errored ? 'error' : 'complete');
+	}
+
 	$: if (isActive) startTicker();
 	else stopTicker();
 
-	$: elapsedMs = state ? (state.finishedAt ?? now) - state.startedAt : 0;
+	$: elapsedMs = widgetElapsedMs(state, isActive, now);
 	$: completedSteps = state?.steps.filter((step) => step.status === 'complete').length ?? 0;
 	$: approxTokens = Math.round((contentLength ?? 0) / 4);
 	$: activeViewers = session?.activeViewers ?? 1;
@@ -116,7 +142,7 @@
 		streaming: $i18n.t('Streaming'),
 		complete: $i18n.t('Complete'),
 		error: $i18n.t('Error')
-	}[status];
+	}[displayStatus];
 
 	$: connectionLabel = {
 		connected: $i18n.t('Connected'),
@@ -143,7 +169,7 @@
 
 	<div class="flex items-center gap-2 flex-wrap min-w-0">
 		<span
-			class="font-medium {status === 'error'
+			class="font-medium {displayStatus === 'error'
 				? 'text-red-600 dark:text-red-400'
 				: 'text-gray-700 dark:text-gray-300'}"
 			aria-hidden="true">{statusLabel}</span
@@ -167,13 +193,17 @@
 				: $i18n.t('{{count}} sessions', { count: activeViewers })}
 		</span>
 
-		{#if session?.status}
+		<!--
+			Only shown while a side-channel session is actually open. The backend emits
+			'complete' when the scripted stream ends or is cancelled, which says nothing
+			about the answer — rendering that as "Session complete" would repeat the very
+			claim this widget is careful not to make.
+		-->
+		{#if session?.status === 'streaming'}
 			<span
 				class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-500 dark:text-gray-400"
 			>
-				{session.status === 'streaming'
-					? $i18n.t('Session streaming')
-					: $i18n.t('Session complete')}
+				{$i18n.t('Session active')}
 			</span>
 		{/if}
 	</div>
@@ -187,23 +217,26 @@
 		class="mt-1.5 h-1 w-full rounded-full overflow-hidden bg-gray-200 dark:bg-gray-850"
 		aria-hidden="true"
 	>
-		{#if status === 'streaming'}
+		{#if displayStatus === 'streaming'}
 			<div class="rail-segment h-full w-1/3 rounded-full bg-gray-400 dark:bg-gray-600"></div>
-		{:else if status === 'complete'}
+		{:else if displayStatus === 'complete'}
 			<div class="h-full w-full rounded-full bg-green-500/70"></div>
-		{:else if status === 'error'}
+		{:else if displayStatus === 'error'}
 			<div class="h-full w-full rounded-full bg-red-500/70"></div>
 		{/if}
 	</div>
 
-	{#if status === 'starting'}
+	{#if displayStatus === 'starting'}
 		<div class="mt-1.5 shimmer text-gray-500 dark:text-gray-400">
 			{$i18n.t('Preparing session…')}
 		</div>
 	{:else}
 		<div class="mt-1.5 text-gray-500 dark:text-gray-400 tabular-nums">
-			{#if status === 'error'}
+			{#if displayStatus === 'error'}
 				{state?.errorMessage ?? $i18n.t('Stream failed')}
+			{:else if workflowDone && !done}
+				<!-- The retrieval trace is finished but the answer is not. Say exactly that. -->
+				{$i18n.t('Retrieval complete · generating answer…')}
 			{:else}
 				{$i18n.t('{{count}} steps complete', { count: completedSteps })}
 			{/if}
