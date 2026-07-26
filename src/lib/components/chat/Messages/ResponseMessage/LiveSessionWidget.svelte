@@ -46,7 +46,13 @@
 	const startTicker = () => {
 		if (ticker) return;
 		now = Date.now();
-		ticker = setInterval(() => (now = Date.now()), 1000);
+		// Sampled faster than the second-resolution display it feeds. At 1Hz the tick
+		// cadence drifts against startedAt's second boundaries, so two boundaries
+		// occasionally fall between ticks and the digits skip (0:05 -> 0:07). Four
+		// samples a second observe a boundary within ~250ms and the flip reads smooth.
+		// This buys cadence, not guarantees: a blocked main thread or a throttled tab
+		// still delays a tick, and the display then jumps to truthful wall time.
+		ticker = setInterval(() => (now = Date.now()), 250);
 	};
 
 	const stopTicker = () => {
