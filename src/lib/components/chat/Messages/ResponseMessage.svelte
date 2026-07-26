@@ -203,8 +203,12 @@
 
 	const persistLiveSession = async (snapshot: WidgetSnapshot) => {
 		// Nested mutation of history.messages does not schedule a save, so this goes
-		// through saveMessage explicitly with an immutably updated message.
-		await saveMessage(message.id, { ...message, liveSession: snapshot });
+		// through saveMessage explicitly with an immutably updated message. It spreads
+		// the live entry from history rather than this component's `message` prop, which
+		// may be a stale clone by the time a save lands and would otherwise roll back
+		// whatever else was written in the meantime.
+		const current = history?.messages?.[message.id] ?? message;
+		await saveMessage(message.id, { ...current, liveSession: snapshot });
 	};
 	$: hasResponseContent = Boolean((message.content ?? '').trim() || message.output?.length);
 

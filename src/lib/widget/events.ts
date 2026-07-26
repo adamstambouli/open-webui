@@ -61,14 +61,24 @@ const STEP_STATUSES: WidgetStepStatus[] = ['running', 'complete', 'error'];
 /**
  * A finished session, persisted onto the message so a reload still shows the trace.
  * Versioned because it outlives the code that wrote it.
+ *
+ * The type narrows what `WidgetState` leaves open: a snapshot is terminal by definition
+ * and always knows when its session ended, so those stop being optional here rather than
+ * letting the type vouch for something `hydrateWidgetState` would reject.
  */
-export type WidgetSnapshot = WidgetState & { v: 1 };
+export type WidgetSnapshot = Omit<WidgetState, 'status' | 'endedAt'> & {
+	v: 1;
+	status: 'complete' | 'error';
+	endedAt: number;
+};
 
 export const SNAPSHOT_VERSION = 1;
 
 /** Only terminal sessions are worth persisting; an in-flight one would reload as a lie. */
 export const snapshotWidgetState = (state: WidgetState): WidgetSnapshot | null =>
-	isTerminal(state.status) ? { ...state, v: SNAPSHOT_VERSION } : null;
+	(state.status === 'complete' || state.status === 'error') && state.endedAt !== undefined
+		? { ...state, status: state.status, endedAt: state.endedAt, v: SNAPSHOT_VERSION }
+		: null;
 
 const isFiniteNumber = (value: unknown): value is number =>
 	typeof value === 'number' && Number.isFinite(value);

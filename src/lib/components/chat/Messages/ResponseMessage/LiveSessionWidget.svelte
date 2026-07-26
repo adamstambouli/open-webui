@@ -95,6 +95,7 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		controller?.abort();
 		stopTicker();
 		clearWidgetIfActive(chatId, messageId);
@@ -129,14 +130,21 @@
 	else stopTicker();
 
 	// Persist once per finished session, keyed on its endedAt so continue-response's new
-	// session overwrites the old one and nothing else re-saves. `persistedEndedAt` is set
-	// only after the save resolves, so a failure retries on the next update instead of
-	// being permanently suppressed; `persistingEndedAt` keeps that retry from stacking.
+	// session overwrites the old one and nothing else re-saves.
+	//
+	// Retries are explicit rather than implicit. A terminal session produces no further
+	// state updates, so this effect will not run again on its own — simply clearing the
+	// in-flight guard would leave a failed save looking retryable while nothing ever
+	// retried it. Instead the attempts are bounded here, and abandoned on destroy.
+	const PERSIST_ATTEMPTS = 3;
+	const PERSIST_RETRY_MS = 2000;
+
 	let persistingEndedAt: number | null = null;
 	let persistedEndedAt: number | null = null;
+	let destroyed = false;
 
 	const persistIfNeeded = async (snapshotState: WidgetState | undefined) => {
-		if (!persistSnapshot || !snapshotState?.endedAt) return;
+		if (!persistSnapshot || snapshotState?.endedAt === undefined) return;
 		const { endedAt } = snapshotState;
 		if (persistedEndedAt === endedAt || persistingEndedAt === endedAt) return;
 
@@ -145,10 +153,20 @@
 
 		persistingEndedAt = endedAt;
 		try {
-			await persistSnapshot(snapshot);
-			persistedEndedAt = endedAt;
-		} catch (e) {
-			console.error('Failed to persist live session snapshot', e);
+			for (let attempt = 1; attempt <= PERSIST_ATTEMPTS; attempt++) {
+				try {
+					await persistSnapshot(snapshot);
+					persistedEndedAt = endedAt;
+					return;
+				} catch (e) {
+					if (destroyed || attempt === PERSIST_ATTEMPTS) {
+						console.error('Failed to persist live session snapshot', e);
+						return;
+					}
+					await new Promise((resolve) => setTimeout(resolve, PERSIST_RETRY_MS));
+					if (destroyed) return;
+				}
+			}
 		} finally {
 			persistingEndedAt = null;
 		}
@@ -168,11 +186,20 @@
 				)
 			: formatCompactCount(value);
 
-	// Expansion is tri-state: `null` means "follow the default", which is expanded while
-	// the trace is streaming (the checklist is the point) and collapsed once it settles
-	// into a footer. An explicit toggle wins from then on.
+	// Expansion is tri-state: `null` follows the default, which is expanded while the
+	// trace is streaming (the checklist is the point) and collapsed once it settles into
+	// a footer. An explicit toggle wins — but only until the session ends, because
+	// collapsing on completion is the whole point of the footer. Finishing clears the
+	// override so the collapse always happens, and the user can reopen afterwards.
 	let expandedOverride: boolean | null = null;
+	// Not seeded from `isActive`, which is still undefined during setup.
+	let prevIsActive = false;
+
 	$: expanded = expandedOverride ?? isActive;
+	$: if (isActive !== prevIsActive) {
+		if (prevIsActive) expandedOverride = null;
+		prevIsActive = isActive;
+	}
 
 	$: metricSummary = Object.entries(state?.metrics ?? {}).map(
 		([metricKey, metric]) =>
@@ -196,9 +223,12 @@
 						: `${runningStep?.label ?? $i18n.t('Working')}…`;
 
 	$: statsText = `${formatElapsed(elapsedMs)} · ~ ${formatCompactCount(approxTokens)} ${$i18n.t('tokens')}`;
-	$: statsSpokenText = $i18n.t('{{duration}}, approximately {{count}} tokens', {
+	// Spoken as the compact count the visible line shows, not the raw integer behind it.
+	// Interpolated as `tokens`, not `count`, which i18next reserves for plural selection
+	// and types as a number — "5.1k" has no business driving plural rules.
+	$: statsSpokenText = $i18n.t('{{duration}}, approximately {{tokens}} tokens', {
 		duration: formatElapsed(elapsedMs),
-		count: approxTokens
+		tokens: formatCompactCount(approxTokens)
 	});
 
 	/** Healthy states stay silent; only exceptions earn a line in the trace. */
@@ -274,7 +304,11 @@
 				aria-expanded={expanded}
 				on:click={() => (expandedOverride = !expanded)}
 			>
-				<ChevronDown className="size-3 transition-transform {expanded ? 'rotate-180' : ''}" />
+				<ChevronDown
+					className="size-3 transition-transform motion-reduce:transition-none {expanded
+						? 'rotate-180'
+						: ''}"
+				/>
 			</button>
 		</div>
 	</Tooltip>
@@ -379,6 +413,29 @@
 
 	.rail-segment {
 		animation: rail-slide 1.4s ease-in-out infinite;
+	}
+
+	/*
+	 * app.css:214 writes the dark-mode shimmer as `:global(.dark) .shimmer` — Svelte
+	 * syntax in a plain stylesheet, so it ships literally and never matches, leaving
+	 * dark-mode shimmer text stuck on the light gradient. Shimmer is this widget's only
+	 * working indicator on the collapsed line, so it is re-declared here, scoped, rather
+	 * than repairing a global rule the rest of the app also renders against.
+	 */
+	:global(.dark) .live-session-widget :global(.shimmer) {
+		background: linear-gradient(
+			110deg,
+			#9a9a9a 0%,
+			#9a9a9a 43%,
+			#5e5e5e 50%,
+			#9a9a9a 57%,
+			#9a9a9a 100%
+		);
+		background-size: 200% 100%;
+		background-clip: text;
+		-webkit-background-clip: text;
+		-webkit-text-fill-color: transparent;
+		color: #9a9a9a;
 	}
 
 	@keyframes rail-slide {
