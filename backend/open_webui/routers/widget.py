@@ -9,6 +9,7 @@ Registered from ``main.py`` only when ``ENV == 'dev'``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 
@@ -33,32 +34,71 @@ def _metric(key: str, label: str, value: float) -> dict:
     return {'type': 'metric', 'key': key, 'label': label, 'value': value}
 
 
-# (delay before emitting, event name, payload). A payload that is already a string is
-# yielded raw — that is how the deliberately malformed frame gets onto the wire.
-_SCRIPT: list[tuple[float, str, dict | str]] = [
-    (0.3, 'widget_delta', _step('parse', 'Parsing request', 'running')),
-    (0.4, 'widget_delta', _step('parse', 'Parsing request', 'complete')),
-    (0.3, 'widget_delta', _step('search_courses', 'Searching course docs', 'running')),
-    (0.5, 'widget_delta', _metric('sources', 'Sources', 2)),
-    (0.4, 'widget_delta', _step('search_courses', 'Searching course docs', 'complete')),
-    (0.3, 'widget_delta', _step('search_repos', 'Searching repositories', 'running')),
-    # Exact duplicate of the frame above — the reducer must treat it as a no-op.
-    (0.4, 'widget_delta', _step('search_repos', 'Searching repositories', 'running')),
-    (0.5, 'widget_delta', _metric('sources', 'Sources', 5)),
-    # Valid SSE framing, truncated JSON body — the parser must drop it and carry on.
-    (0.3, 'widget_delta', '{"messageId":"__MESSAGE_ID__","type":"step","id":"search_re'),
-    (0.4, 'widget_delta', _step('search_repos', 'Searching repositories', 'complete')),
-    (0.5, 'widget_delta', _step('rank', 'Ranking passages', 'running')),
-    (0.4, 'widget_delta', _metric('confidence', 'Confidence', 0.87)),
-    (0.3, 'widget_delta', _step('rank', 'Ranking passages', 'complete')),
-    (0.5, 'widget_delta', _step('generate', 'Generating answer', 'running')),
-    (0.7, 'widget_delta', _metric('sources', 'Sources', 7)),
-    (0.4, 'widget_delta', _step('generate', 'Generating answer', 'complete')),
+# The collections a retrieval step can search. Which pair a message gets is seeded from
+# its id, so the demo varies between messages while staying reproducible for any one.
+_COLLECTIONS = [
+    ('courses', 'Searching course materials'),
+    ('research', 'Searching research repositories'),
+    ('patents', 'Searching IP & patents'),
+    ('projects', 'Cross-referencing active projects'),
 ]
 
-# scenario=error cuts the script short and fails instead of completing.
-_ERROR_AFTER_INDEX = 9  # through the search_repos completion
 _ERROR_MESSAGE = 'Retrieval backend unavailable'
+
+
+def _seed(message_id: str) -> int:
+    """Stable across processes and restarts, unlike hash()."""
+    return int(hashlib.sha256(message_id.encode()).hexdigest(), 16)
+
+
+def build_script(message_id: str, scenario: str) -> list[tuple[float, str, dict | str]]:
+    """Build the frame script for one message.
+
+    Pure and deterministic: the same message_id always yields byte-identical frames
+    (the delays are cadence only and are not part of that claim). Randomising instead
+    would have cost the brief's deterministic mock endpoint; seeding buys variety
+    without it, and lets this be asserted without running the streaming machinery.
+
+    Every variant keeps the duplicate frame and the malformed raw line — the resilience
+    the widget is built to absorb must be visible in any demo, not just a lucky one.
+    """
+    seed = _seed(message_id)
+    first_key, first_label = _COLLECTIONS[seed % len(_COLLECTIONS)]
+    second_key, second_label = _COLLECTIONS[(seed // len(_COLLECTIONS)) % len(_COLLECTIONS)]
+    if second_key == first_key:  # never search the same collection twice
+        second_key, second_label = _COLLECTIONS[(seed + 1) % len(_COLLECTIONS)]
+
+    first_sources = 2 + seed % 3  # 2-4
+    total_sources = first_sources + 3 + (seed // 7) % 4  # first + 3-6
+    confidence = round(0.78 + (seed % 17) / 100, 2)  # 0.78-0.94
+
+    script: list[tuple[float, str, dict | str]] = [
+        (0.3, 'widget_delta', _step('parse', 'Parsing query', 'running')),
+        (0.4, 'widget_delta', _step('parse', 'Parsing query', 'complete')),
+        (0.3, 'widget_delta', _step(first_key, first_label, 'running')),
+        (0.5, 'widget_delta', _metric('sources', 'Sources', first_sources)),
+        (0.4, 'widget_delta', _step(first_key, first_label, 'complete')),
+        (0.3, 'widget_delta', _step(second_key, second_label, 'running')),
+        # Exact duplicate of the frame above — the reducer must treat it as a no-op.
+        (0.4, 'widget_delta', _step(second_key, second_label, 'running')),
+        (0.5, 'widget_delta', _metric('sources', 'Sources', total_sources)),
+        # Valid SSE framing, truncated JSON body — the parser must drop it and carry on.
+        (0.3, 'widget_delta', '{"messageId":"__MESSAGE_ID__","type":"step","id":"trunca'),
+        (0.4, 'widget_delta', _step(second_key, second_label, 'complete')),
+    ]
+
+    # scenario=error stops here and fails instead of completing.
+    if scenario == 'error':
+        return script
+
+    script += [
+        (0.5, 'widget_delta', _step('rank', 'Ranking sources', 'running')),
+        (0.4, 'widget_delta', _metric('confidence', 'Confidence', confidence)),
+        (0.3, 'widget_delta', _step('rank', 'Ranking sources', 'complete')),
+        (0.5, 'widget_delta', _step('generate', 'Generating answer', 'running')),
+        (0.4, 'widget_delta', _step('generate', 'Generating answer', 'complete')),
+    ]
+    return script
 
 
 def _frame(event: str, payload: dict | str, message_id: str) -> str:
@@ -73,8 +113,7 @@ async def _widget_event_stream(chat_id: str, message_id: str, scenario: str):
     # Tell every viewer of this chat that a session is live before the first frame.
     await broadcast_chat_session_status(chat_id, 'streaming')
     try:
-        script = _SCRIPT[: _ERROR_AFTER_INDEX + 1] if scenario == 'error' else _SCRIPT
-        for delay, event, payload in script:
+        for delay, event, payload in build_script(message_id, scenario):
             await asyncio.sleep(delay)
             yield _frame(event, payload, message_id)
 

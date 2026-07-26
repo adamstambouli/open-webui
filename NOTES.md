@@ -54,7 +54,13 @@ flowchart TB
 | Active sessions (room membership)            |                                     |
 | Generation status (`done`/`error` + SSE)     |                                     |
 
-The mock deliberately emits one duplicate and one malformed frame mid-stream — resilience is visible in the demo, not just in tests. `?scenario=error` gives a deterministic error path.
+The script is **deterministic per message (seeded)**: `sha256(message_id)` picks which collections get searched and derives the source counts and confidence, so the same message always replays byte-identically while different messages give a varied demo. Randomising would have cost the brief's deterministic mock endpoint; seeding buys the variety without it. Every variant keeps one duplicate frame and one malformed raw line — the resilience the widget absorbs has to be visible in any demo, not just a lucky one. `?scenario=error` gives a deterministic error path.
+
+The script builder is a pure `build_script(message_id, scenario)` with no I/O and no sleeps, so determinism is assertable without the streaming machinery (vitest cannot see this file):
+
+```sh
+cd backend && PYTHONPATH=$PWD ./venv/bin/python -c "from open_webui.routers.widget import build_script, _frame; a=[_frame(e,p,'m') for _,e,p in build_script('m','happy')]; b=[_frame(e,p,'m') for _,e,p in build_script('m','happy')]; assert a==b; print('deterministic', len(a), 'frames')"
+```
 
 The endpoint's four gates (401 without a token, 403 for a chat the caller does not own, 422 for an unknown scenario, 200 `text/event-stream` otherwise) and both stream scripts were exercised directly against `StreamingResponse`, including a simulated client disconnect. The router is absent from the app entirely when `ENV != 'dev'`.
 
