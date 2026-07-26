@@ -68,6 +68,7 @@
 		displayFileHandler
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
+	import { chatSessionInfo } from '$lib/widget/store';
 	import { getOutputText } from './Messages/structuredOutput';
 
 	import {
@@ -901,7 +902,57 @@
 				message?.role === 'assistant' && !message.done && (message.childrenIds?.length ?? 0) === 0
 		);
 
+	// Socket.IO room membership for this chat — the server broadcasts presence and
+	// session status to `chat:{id}` and ownership-checks the join.
+	let joinedChatRoomId = null;
+
+	const forgetChatSession = (id) => {
+		chatSessionInfo.update((info) => {
+			const next = { ...info };
+			delete next[id];
+			return next;
+		});
+	};
+
+	// All three values are arguments rather than closed-over stores: legacy Svelte
+	// only tracks references it sees in the reactive statement itself.
+	const syncChatRoom = (socket, id, temporary) => {
+		// Temporary chats and not-yet-persisted `local:` ids have no server-side room.
+		const target = socket && id && !id.startsWith('local:') && !temporary ? id : null;
+
+		if (joinedChatRoomId && joinedChatRoomId !== target) {
+			socket?.emit('leave-chat', { chat_id: joinedChatRoomId });
+			forgetChatSession(joinedChatRoomId);
+			joinedChatRoomId = null;
+		}
+
+		if (target && joinedChatRoomId !== target) {
+			socket.emit('join-chat', { chat_id: target });
+			joinedChatRoomId = target;
+		}
+	};
+
+	$: syncChatRoom($socket, $chatId, $temporaryChatEnabled);
+
+	const chatSessionEventHandler = (data) => {
+		if (!data?.chatId) return;
+		chatSessionInfo.update((info) => ({
+			...info,
+			[data.chatId]: {
+				...info[data.chatId],
+				...(data.type === 'presence' ? { activeViewers: data.activeViewers } : {}),
+				...(data.type === 'session_status' ? { status: data.status } : {})
+			}
+		}));
+	};
+
 	const handleSocketConnect = async () => {
+		// A reconnect gets a fresh sid, so room membership is gone — rejoin before the
+		// early returns below, which are about reloading chat state, not membership.
+		if (joinedChatRoomId) {
+			$socket?.emit('join-chat', { chat_id: joinedChatRoomId });
+		}
+
 		if (!chatIdProp || $temporaryChatEnabled) {
 			return;
 		}
@@ -925,6 +976,7 @@
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
+		$socket?.on('chat-session-event', chatSessionEventHandler);
 
 		$audioQueue?.destroy();
 
@@ -1042,6 +1094,13 @@
 				window.removeEventListener('message', onMessageHandler);
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('connect', handleSocketConnect);
+				$socket?.off('chat-session-event', chatSessionEventHandler);
+
+				if (joinedChatRoomId) {
+					$socket?.emit('leave-chat', { chat_id: joinedChatRoomId });
+					forgetChatSession(joinedChatRoomId);
+					joinedChatRoomId = null;
+				}
 				dismissContextCompactionToast();
 				audioQueueInstance?.destroy();
 				audioQueue.set(null);

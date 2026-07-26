@@ -2,6 +2,7 @@
 	import { toast } from 'svelte-sonner';
 	import dayjs from 'dayjs';
 
+	import { dev } from '$app/environment';
 	import { createEventDispatcher, onDestroy } from 'svelte';
 	import { onMount, tick, getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
@@ -62,6 +63,9 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
+	import LiveSessionWidget from './ResponseMessage/LiveSessionWidget.svelte';
+	import { widgetKey } from '$lib/widget/events';
+	import { widgetStates } from '$lib/widget/store';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 	import OutputEditView from './OutputEditView.svelte';
 	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
@@ -691,6 +695,23 @@
 			<div>
 				<div class="chat-{message.role} w-full min-w-full markdown-prose">
 					<div>
+						<!--
+							Two guards, two cases. A brand-new chat has no id until the backend assigns
+							one (`chatId` is still ''), and a temporary chat is given `local:{socket.id}`
+							and never persists. Streaming against either would 403 and never recover, so
+							the widget waits: on a new chat it appears once the real id lands, and on a
+							temporary chat it never appears at all (deliberate cut).
+						-->
+						{#if dev && chatId && !chatId.startsWith('local:') && (message.done === false || $widgetStates[widgetKey(chatId, message.id)])}
+							<LiveSessionWidget
+								{chatId}
+								messageId={message.id}
+								done={message.done}
+								error={message.error}
+								contentLength={message.content?.length ?? 0}
+							/>
+						{/if}
+
 						{#if model?.info?.meta?.capabilities?.status_updates ?? true}
 							<StatusHistory statusHistory={message?.statusHistory} />
 						{/if}
