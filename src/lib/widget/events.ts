@@ -58,6 +58,36 @@ export const initialWidgetState = (startedAt: number): WidgetState => ({
 
 const STEP_STATUSES: WidgetStepStatus[] = ['running', 'complete', 'error'];
 
+/** One decimal place, with JS dropping a trailing `.0` for us (`String(5.0) === '5'`). */
+const oneDecimal = (value: number) => Math.round(value * 10) / 10;
+
+/**
+ * Compact counts in the status-line idiom: `512`, `5.1k`, `1M`.
+ *
+ * Hand-rolled rather than `Intl.NumberFormat` compact notation, which yields an
+ * uppercase `K`. Rounding is applied at each scale before the suffix is chosen, so a
+ * value that rounds up out of its unit is promoted: 999_950 reads `1M`, never `1000k`.
+ */
+export const formatCompactCount = (n: number): string => {
+	if (!Number.isFinite(n)) return '0';
+	const value = Math.max(0, n);
+	if (value < 1000) return String(Math.round(value));
+
+	const thousands = oneDecimal(value / 1000);
+	if (thousands < 1000) return `${thousands}k`;
+	return `${oneDecimal(value / 1_000_000)}M`;
+};
+
+/** Durations in the status-line idiom: `12s`, `2m 21s`, `1h 4m`. */
+export const formatElapsed = (ms: number): string => {
+	const totalSeconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+
+	const minutes = Math.floor(totalSeconds / 60);
+	if (minutes < 60) return `${minutes}m ${totalSeconds % 60}s`;
+	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+};
+
 /**
  * What the user is told — not the same thing as what the stream is doing. The scripted
  * stream ends at `widget_done`, routinely long before the answer does, so only the

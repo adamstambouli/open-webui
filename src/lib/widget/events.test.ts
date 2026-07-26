@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	formatCompactCount,
+	formatElapsed,
 	getSSEEventReader,
 	initialWidgetState,
 	isWidgetActive,
@@ -110,6 +112,57 @@ describe('parseWidgetEvent', () => {
 		for (const [name, data] of bad) {
 			expect(parseWidgetEvent(name, data), `${name} / ${data}`).toBeNull();
 		}
+	});
+});
+
+describe('formatCompactCount', () => {
+	it('leaves counts under a thousand alone', () => {
+		expect(formatCompactCount(0)).toBe('0');
+		expect(formatCompactCount(512)).toBe('512');
+		expect(formatCompactCount(999)).toBe('999');
+	});
+
+	it('uses a lowercase k with one decimal, dropping a trailing zero', () => {
+		expect(formatCompactCount(1000)).toBe('1k');
+		expect(formatCompactCount(5123)).toBe('5.1k');
+		expect(formatCompactCount(5000)).toBe('5k');
+		expect(formatCompactCount(999_949)).toBe('999.9k');
+	});
+
+	it('promotes across the suffix boundary rather than printing 1000k', () => {
+		expect(formatCompactCount(999_950)).toBe('1M');
+		expect(formatCompactCount(1_000_000)).toBe('1M');
+		expect(formatCompactCount(2_450_000)).toBe('2.5M');
+	});
+
+	it('never renders NaN or a negative count', () => {
+		expect(formatCompactCount(Number.NaN)).toBe('0');
+		expect(formatCompactCount(Number.POSITIVE_INFINITY)).toBe('0');
+		expect(formatCompactCount(-5)).toBe('0');
+	});
+});
+
+describe('formatElapsed', () => {
+	it('renders seconds under a minute', () => {
+		expect(formatElapsed(0)).toBe('0s');
+		expect(formatElapsed(12_400)).toBe('12s');
+		expect(formatElapsed(59_999)).toBe('59s');
+	});
+
+	it('renders minutes and seconds up to an hour', () => {
+		expect(formatElapsed(60_000)).toBe('1m 0s');
+		expect(formatElapsed(141_000)).toBe('2m 21s');
+		expect(formatElapsed(3_599_000)).toBe('59m 59s');
+	});
+
+	it('drops to hours and minutes past an hour', () => {
+		expect(formatElapsed(3_600_000)).toBe('1h 0m');
+		expect(formatElapsed(3_840_000)).toBe('1h 4m');
+	});
+
+	it('never renders NaN or a negative duration', () => {
+		expect(formatElapsed(Number.NaN)).toBe('0s');
+		expect(formatElapsed(-1000)).toBe('0s');
 	});
 });
 

@@ -5,6 +5,8 @@
 
 	import { socketStatus } from '$lib/stores';
 	import {
+		formatCompactCount,
+		formatElapsed,
 		isWidgetActive,
 		widgetDisplayStatus,
 		widgetElapsedMs,
@@ -131,17 +133,13 @@
 	$: approxTokens = Math.round((contentLength ?? 0) / 4);
 	$: activeViewers = session?.activeViewers ?? 1;
 
-	const formatElapsed = (ms: number) => {
-		const total = Math.max(0, Math.floor(ms / 1000));
-		return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-	};
-
+	// Confidence is a ratio and reads as a percentage; every other metric is a count.
 	const formatMetric = (metricKey: string, value: number) =>
 		metricKey === 'confidence'
 			? new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 0 }).format(
 					value
 				)
-			: new Intl.NumberFormat().format(value);
+			: formatCompactCount(value);
 
 	$: statusLabel = {
 		starting: $i18n.t('Starting'),
@@ -283,11 +281,19 @@
 				{formatMetric(metricKey, metric.value)}
 			</span>
 		{/each}
+		<!--
+			The `~` is the visible approximation marker; a screen reader would read it as
+			"tilde", so it is hidden and the companion text says "approximately" instead.
+		-->
 		<span
 			class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-600 dark:text-gray-400 tabular-nums"
 		>
-			{$i18n.t('≈ tokens')}
-			{approxTokens}
+			<span aria-hidden="true">~ {formatCompactCount(approxTokens)} {$i18n.t('tokens')}</span>
+			<span class="sr-only"
+				>{$i18n.t('approximately {{count}} tokens', {
+					count: approxTokens
+				})}</span
+			>
 		</span>
 		<span
 			class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-850 text-gray-600 dark:text-gray-400 tabular-nums"
