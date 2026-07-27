@@ -148,6 +148,11 @@ describe('snapshotWidgetState / hydrateWidgetState', () => {
 		expect(snapshotWidgetState({ ...finished, status: 'starting' })).toBeNull();
 	});
 
+	it('refuses to snapshot a terminal session that never recorded its end', () => {
+		// WidgetSnapshot's type promises endedAt; without this guard it could lie.
+		expect(snapshotWidgetState({ ...finished, endedAt: undefined })).toBeNull();
+	});
+
 	it('rejects anything it cannot fully vouch for', () => {
 		const snapshot = snapshotWidgetState(finished);
 		const cases: [string, unknown][] = [

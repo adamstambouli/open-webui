@@ -188,16 +188,17 @@
 
 	// Expansion is tri-state: `null` follows the default, which is expanded while the
 	// trace is streaming (the checklist is the point) and collapsed once it settles into
-	// a footer. An explicit toggle wins — but only until the session ends, because
-	// collapsing on completion is the whole point of the footer. Finishing clears the
-	// override so the collapse always happens, and the user can reopen afterwards.
+	// a footer. An explicit toggle wins only within one session: either direction of the
+	// active/terminal transition clears it, so finishing always collapses to the footer
+	// and a continue-response always reopens to the checklist. The user can toggle again
+	// from there.
 	let expandedOverride: boolean | null = null;
 	// Not seeded from `isActive`, which is still undefined during setup.
 	let prevIsActive = false;
 
 	$: expanded = expandedOverride ?? isActive;
 	$: if (isActive !== prevIsActive) {
-		if (prevIsActive) expandedOverride = null;
+		expandedOverride = null;
 		prevIsActive = isActive;
 	}
 
