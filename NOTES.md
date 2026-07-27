@@ -1,23 +1,35 @@
-# NOTES — Live Session Widget
+# Live Session Widget
 
-> Status: implemented and verified in the browser. `npm run test:frontend` — 47 tests green.
+A real-time status widget for Open WebUI. It appears with each assistant response and streams retrieval steps, sources, and live metrics while the answer generates.
 
-**▶ [Demo (mp4, 37s)](design/demo.mp4)** — the real thing, recorded live: a web-search question ("tell me about xFoundry at UMD"), the widget mounting as generation starts, steps streaming in with per-step durations, the seeded trace citing `[1][2][3]` beside the answer's own real web citations (the real-vs-mocked table, on camera), then the settle into the citation footer and the hover peek over the collapsed row. Screenshots: [light](design/showcase-light.png) · [dark](design/showcase-dark.png) · [peek popover](design/showcase-peek-popover.png).
+> Implemented and verified in the browser. `npm run test:frontend` — 47 tests green.
+
+## Demo
+
+<video src="design/demo.mp4" controls width="720"></video>
+
+**[▶ Watch the demo (37s)](design/demo.mp4)** — GitHub opens it in a built-in player. Recorded live: a web-search question, the widget streaming steps and sources beside the real answer, then settling into its citation footer.
+
+<p>
+  <img src="design/showcase-light.png" width="49%" alt="All widget states, light theme" />
+  <img src="design/showcase-dark.png" width="49%" alt="All widget states, dark theme" />
+</p>
+
+More: [peek popover](design/showcase-peek-popover.png) · **[DESIGN.md](DESIGN.md)** (principles, iteration history, bugs caught in design) · `widget-showcase.html` (the final design, live — open from disk).
 
 ## Run
 
 ```sh
 # frontend
 cp -RPp .env.example .env && npm install && npm run dev
+
 # backend (Python 3.11 venv, requirements.txt, WEBUI_SECRET_KEY in .env)
-sh backend/dev.sh          # ENV=dev registers the widget router — check /docs
+sh backend/dev.sh   # ENV=dev registers the widget router — check /docs
 ```
 
-Use a working model provider (Ollama or any OpenAI-compatible key) and a **single model** — with multi-model responses, each per-message stream emits chat-level `session_status`, so the first to finish flips the chat to `complete` early (accepted limitation).
+You need a working model provider (Ollama or any OpenAI-compatible key). Use a **single model**: with multi-model responses, the first stream to finish flips the chat-level status early (accepted limitation).
 
-**Design artifacts** (repo root, self-contained — kept deliberately as process evidence): `design/` holds screenshots of every state ([light](design/showcase-light.png) · [dark](design/showcase-dark.png) · [peek popover](design/showcase-peek-popover.png)) so nothing needs to run to see what was built; `widget-showcase.html` renders the final design live, one annotated card per state; `widget-playground.html` is the iteration sandbox the design went through; `DESIGN.md` records the principles, systems, and the bugs the design process caught before they shipped.
-
-## Architecture
+## How it works
 
 ```mermaid
 flowchart TB
@@ -39,82 +51,87 @@ flowchart TB
     CH -. "join-chat {chat_id}" .-> SIO
 ```
 
-- **The component owns one SSE request.** Destroying it (navigation, chat switch) aborts the request; non-terminal state is deleted, completed snapshots stay in the store and re-render on navigate-back.
-- **Events pass through a pure parser and reducer** (`(state, event) → state`, no I/O, no clock) into state keyed `chatId:messageId` — duplicates are idempotent upserts, malformed frames are dropped, deltas after a terminal status are ignored.
-- **Chat.svelte owns Socket.IO room membership** — join on chat open, leave on switch, rejoin on reconnect. Presence = session count (tabs/devices), the meaningful number for a single-user chat.
-- **Continue-response** (Open WebUI reuses the messageId and flips `done` back to false) is the one edge-trigger: observed `true → false` clears state and restarts once. Regenerate mints a new messageId and gets a fresh key for free. `complete`/`error` never auto-restart.
-- **The scripted stream and the answer are two different clocks**, and the widget never conflates them. `widget_done` ends the ~7s retrieval trace; the answer routinely generates for much longer. Only the message's own `done` may settle the widget — in between, the final step renders as still running ("Generating answer…") and the elapsed timer keeps counting. Browser testing caught the earlier version claiming completion ~30s early, which is exactly the lie a status indicator exists to avoid. The state carries both timestamps for the same reason: `finishedAt` (stream) and `endedAt` (generation, and what elapsed measures).
-- **Finishing is level-triggered, not edge-triggered.** Restarting needs an edge — continue-response is only visible as `done` going true → false. Finishing does not: the component asks "generation over and this session unstamped?" on every update, and `finalizeWidget` is write-once so re-running is free. The edge-triggered version missed the transition in the browser and stranded elapsed at the mock's ~6s finish, snapping a 1:43 timer backwards. Level-triggering cannot be defeated by a remount or a coalesced update.
-- **Indicators mean specific things.** A spinner is data flowing, a blinking amber dot is attempting-with-no-response, static is settled — and the blink follows the word: the primary marker and the STATUS dot blink while they read "Reconnecting", but a hung step goes static amber, because the step is not retrying, the connection is. Under reduced motion all of it stops and the trailing "…" plus the live region carry activity, which is the signal path screen readers were already using.
-- **Sources are first-class, not a count.** A `source` event carries `{n, title, url}`, so the footer can cite `[1][2][3]` as real links and the expanded view can list them with previews. The old `sources` count metric stays for backward compatibility.
-- **Steps are timed by the reducer, not the component.** It takes the event's arrival time as an argument instead of reading a clock, so it stays pure while recording when each step started and stopped. A repeated frame re-stamps neither — the mock's deliberate duplicate would otherwise stretch the duration it reports. An error settles any step still running, since nothing is in progress under a dead session.
-- **It blends in rather than announcing itself.** No card, no border — one quiet line: a spinner beside the current step (`Searching research repositories…`), elapsed and `~tokens` right-aligned, a chevron. Clicking anywhere on the row toggles the details; hovering the collapsed row peeks them in a dense popover. The step checklist (with per-step durations) is expanded while streaming, because watching it fill in is the point; on completion everything auto-collapses to a citation footer (`[1][2][3] · 87% confidence`) — no "Complete" label; a settled line with no spinner says it, and the live region still announces it. Healthy state is silent: connection appears only when reconnecting or offline, session count only above one.
-- **Finished sessions survive a reload.** The terminal state is snapshotted onto the message as `liveSession` — schemaless additive field, following the `statusHistory`/`usage` precedent — and versioned, because stored data outlives the code that wrote it. Writing is explicit: nested mutation of `history.messages` schedules no save, so the component hands the snapshot up to `saveMessage`, once per session and keyed on `endedAt`, marking success only after the save resolves so a failure retries rather than being swallowed. Reading is defensive in the same spirit as the SSE parser: `hydrateWidgetState` accepts only version 1, only terminal statuses, and only finite, correctly ordered timestamps. Anything else yields no widget at all, which beats a widget stranded on "Starting".
-- **Widget mounts only for persisted chats.** A brand-new chat has no id until the backend assigns one, and a temporary chat is given `local:{socket.id}` and never persists; streaming against either would 403 with no recovery. The render gate rejects both, so the widget appears a beat after the first send on a new chat and never appears in a temporary one (deliberate cut).
+**The component owns one SSE request.** Destroying it — navigation, chat switch, regenerate — aborts the request. Finished snapshots stay in the store, so navigating back still shows the trace.
+
+**Events pass through a pure parser and reducer** into state keyed `chatId:messageId`. Duplicate frames are no-ops. Malformed frames are dropped. Nothing changes after a terminal state.
+
+**Chat.svelte owns the socket room.** Join on chat open, leave on switch, rejoin after reconnect. Presence counts sessions (tabs), not users — the number that matters for a single-user chat.
+
+**Restarting needs an edge; finishing needs a level.** Continue-response reuses the messageId and flips `done` back to false — only that transition restarts a stream, so restarts can't loop. Finishing checks "generation over and unstamped?" on every update — levels can't be missed by a remount, and `finalizeWidget` is write-once so re-runs are free. Regenerate gets a new id, so a fresh key.
+
+**Two clocks, never conflated.** The mock stream ends (`finishedAt`) long before the answer does (`endedAt`). Only the message's own `done` can mark the widget complete, and elapsed always measures the generation. The first version claimed "Complete" ~30 seconds early — exactly the lie a status indicator exists to avoid.
+
+**Indicators have meanings.** Spinner: data is flowing. Blinking amber: attempting, no response — and only on elements that say "Reconnecting"; a hung step shows static amber, because the step isn't retrying, the socket is. Static: settled. With reduced motion, everything is static and the "…" suffix plus the live region carry activity — the same path screen readers use.
+
+**Sources are events, not a count.** Each carries `{n, title, url}`, so the UI cites `[1][2][3]` as real links with hover previews. The reducer stamps step start/end from each event's arrival time (passed in as an argument, keeping it pure) — that's where per-step durations come from. An error settles any step still running.
+
+**The UI is one quiet line.** Spinner, current step, elapsed and `~tokens` right-aligned. Details expand on click (or peek on hover while collapsed); completed sessions collapse to a citation footer — `[1][2][3] · 87% confidence`. Healthy connection stays silent.
+
+**Finished sessions survive a reload.** The terminal state is saved onto the message as `liveSession` (versioned, following the `statusHistory` precedent). Saving is explicit — mutating `history` persists nothing, so the snapshot goes through `saveMessage`, once per session, retried on failure. Hydration validates everything; on any doubt it renders no widget rather than a broken one.
+
+**The widget mounts only for persisted chats.** New chats get it once the backend assigns a real id; temporary chats never do — streaming against a `local:` placeholder id would 403 with no recovery.
 
 ## Real vs. mocked
 
-| Real, live                                   | Scripted (mock SSE)                 |
-| -------------------------------------------- | ----------------------------------- |
-| Elapsed time, ≈ tokens (rendered answer ÷ 4) | Step timeline (RAG retrieval trace) |
-| WS status (`socketStatus` store)             | Sources count, confidence metric    |
-| Active sessions (room membership)            |                                     |
-| Generation status (`done`/`error` + SSE)     |                                     |
+| Real, live                                    | Scripted (mock SSE)                  |
+| --------------------------------------------- | ------------------------------------ |
+| Elapsed time, ~tokens (rendered answer ÷ 4)   | Step timeline (RAG retrieval trace)  |
+| WS status (`socketStatus` store)              | Sources, confidence                  |
+| Active sessions (room membership)             |                                      |
+| Generation status (`done`/`error` + SSE)      |                                      |
 
-The script is **deterministic per message (seeded)**: `sha256(message_id)` picks which collections get searched and derives the source counts and confidence, so the same message always replays byte-identically while different messages give a varied demo. Randomising would have cost the brief's deterministic mock endpoint; seeding buys the variety without it. Every variant keeps one duplicate frame and one malformed raw line — the resilience the widget absorbs has to be visible in any demo, not just a lucky one. `?scenario=error` gives a deterministic error path.
+The script is **deterministic per message**: `sha256(message_id)` picks the collections, sources, and numbers. Same message replays byte-identically; different messages vary the demo. Every variant includes one duplicate frame and one malformed line, so the resilience is visible in any demo. `?scenario=error` gives a deterministic failure.
 
-The script builder is a pure `build_script(message_id, scenario)` with no I/O and no sleeps, so determinism is assertable without the streaming machinery (vitest cannot see this file):
+Verify determinism without the streaming machinery (`build_script` is pure):
 
 ```sh
 cd backend && PYTHONPATH=$PWD ./venv/bin/python -c "from open_webui.routers.widget import build_script, _frame; a=[_frame(e,p,'m') for _,e,p in build_script('m','happy')]; b=[_frame(e,p,'m') for _,e,p in build_script('m','happy')]; assert a==b; print('deterministic', len(a), 'frames')"
 ```
 
-The endpoint's four gates (401 without a token, 403 for a chat the caller does not own, 422 for an unknown scenario, 200 `text/event-stream` otherwise) and both stream scripts were exercised directly against `StreamingResponse`, including a simulated client disconnect. The router is absent from the app entirely when `ENV != 'dev'`.
+The endpoint has four gates — 401 without a token, 403 for a chat you don't own, 422 for an unknown scenario, 200 `text/event-stream` otherwise — all exercised against `StreamingResponse`, including a simulated disconnect. When `ENV != 'dev'`, the router doesn't exist.
 
-## Tradeoffs
+## Design decisions
 
-1. **SSE side-channel is the assignment's shape, not production's.** In production, the generation pipeline itself would emit widget events over the existing `get_event_emitter` → Socket.IO path (as `statusHistory` does), persisted with the message — late joiners get snapshot + live tail. The pure reducer is the migration hedge: only the parser layer would change.
-2. **Component-owned cancellation over a shared stream registry.** An earlier design let streams outlive components (nicer navigate-back mid-stream), then needed epoch guards against finalizer races. Reversed after review: destroy-aborts is legible and removes the hardest code; cost is the ~7s mock replaying if you leave and return mid-stream.
-3. **Presence is real but node-local.** `chat:{id}` rooms with `is_chat_owner` checks on both the socket join and the SSE endpoint; counting via room membership (browsers never say goodbye — disconnect handling keeps it honest). Multi-node presence needs shared membership state — out of scope per the brief.
-4. **No real token counting.** That would mean writing state inside the per-chunk completion handler — the app's hottest path — for a demo metric. Dividing the rendered answer's length by 4 is live, honest ("≈"), and touches nothing. It reads `visibleResponseContent`, not `message.content`, because structured-output responses keep their text in `message.output` — reading the raw field showed `≈ tokens 0` next to a full answer.
-5. **Hover content goes through tippy, not absolute positioning.** The first attempt anchored preview cards to their row, which the design called for and which still got clipped — the cropping ancestor was the message container and the sidebar, not the row. Rendering them through the app's existing `Tooltip` puts them in `document.body`, beyond anything that can crop them. Two consequences worth knowing: the relocated element leaves the component's scope, so its surface uses literal colours and global size utilities rather than the widget's custom properties; and its content is passed as a DOM element rather than an HTML string, so Svelte escapes the source titles and nothing needs sanitising.
-6. **The `session_status: complete` emit is shielded.** Real answers usually finish before the ~7s mock, so the component aborts and the endpoint's cleanup runs via client cancellation rather than natural completion. Starlette streams inside an anyio cancel scope, so a plain `await` in the generator's `finally` is re-cancelled immediately and the emit never lands — every other viewer keeps a stale "streaming" badge forever. Verified against real `StreamingResponse` with a simulated `http.disconnect`, then fixed with `anyio.move_on_after(2, shield=True)`: the shield lets the emit complete, the timeout stops a wedged emit from holding the connection open. Concurrent streams on one chat are last-writer-wins (accepted).
+1. **The SSE side-channel is the assignment's shape, not production's.** In production, the pipeline itself would emit widget events over the existing Socket.IO path (like `statusHistory` does), persisted with the message. The pure reducer survives that move unchanged — only the parser layer swaps.
+2. **The component owns cancellation.** An earlier design shared streams across components and needed guards against finalizer races. Deleting that design was simpler than defending it. Cost: leaving mid-stream and returning replays the ~7s mock.
+3. **Presence is real but single-node.** Multi-node needs shared room state — out of scope per the brief.
+4. **Token count is an estimate.** Real counting would touch the app's hottest handler for a demo metric. Rendered length ÷ 4, labeled `~`. It reads the rendered content, not `message.content` — structured outputs keep their text elsewhere.
+5. **Hover cards render through tippy into `document.body`.** Absolutely-positioned cards get clipped by the app's `overflow` ancestors. Content is passed as DOM elements, so Svelte escapes source titles — no sanitizer needed.
+6. **The `session_status: complete` emit is shielded.** Client cancellation re-cancels a plain `await` inside the generator's `finally`, and the emit never lands — verified against a simulated disconnect, fixed with `anyio.move_on_after(2, shield=True)`. Concurrent streams on one chat are last-writer-wins (accepted).
 
 ## Tests
 
-Built test-first: parser/reducer and store suites written before their implementations, then used as the regression gate for backend and integration phases. `npm run test:frontend` (vitest, `environment: 'node'`, no new deps).
+Built test-first: the parser/reducer and store suites predate their implementations and gated every later phase. `npm run test:frontend` — vitest, node environment, no new dependencies.
 
-- `events.test.ts` — step timing (stamped on entering/leaving `running`, never re-stamped by a duplicate), error-orphaned steps, source parse/upsert/idempotence, snapshot round-trip plus every rejection path (wrong version, non-terminal status, disordered timestamps, malformed steps/metrics); compact-count and duration formatting including the suffix-promotion boundary; frames split across chunk boundaries, malformed JSON, duplicate-step idempotence, step/metric upserts, done/error + post-terminal deltas ignored; plus the two derivations that decide what the user sees: displayed status (a finished stream is not a finished answer) and elapsed time (measured against the generation, never the stream).
-- `store.test.ts` — happy stream reaches `complete` (malformed frame mid-stream, no corruption); abort stops all further writes and `clearWidgetIfActive` drops the partial; an already-aborted signal never even fetches; wrong-messageId events ignored; non-ok responses become `error`; `reset` restarts a finished key and clears `endedAt`; finalizing stamps `endedAt` without touching the stream's own `finishedAt`, is write-once under repeated calls, and never rewrites a stream error as success.
+- `events.test.ts` — chunk-split frames, malformed JSON, duplicate idempotence, step timing (never re-stamped by duplicates), error-orphaned steps, sources, snapshot round-trip plus every rejection path, formatter boundaries, and both display derivations (a finished stream is not a finished answer; elapsed never measures the stream).
+- `store.test.ts` — abort stops all writes, an aborted signal never fetches, wrong-messageId frames are ignored, non-ok responses become errors, reset restarts a finished key, finalize is write-once and never rewrites an error as success.
 
-Both suites were mutation-tested: deliberately breaking the terminal guard, the step dedup, the status validation, the messageId filter, the clear-if-active guard, and each of the two display derivations turned a suite red, so the assertions are load-bearing rather than incidental.
+Both suites are mutation-tested: breaking each guard turns a suite red, so the assertions are load-bearing. The two display derivations are there because both shipped inline, both were wrong, and both were caught by a human in a browser — extracting them as pure functions is what made them testable.
 
-The display derivations earned their place there. Both shipped as inline expressions in the component, both were wrong, and both were caught by a person driving a browser rather than by the suite — a finished stream reported as a finished answer, and elapsed falling back to the stream's end and jumping backwards. Pulling them out as pure functions is what made them testable at all.
+Svelte lifecycle (continue / regenerate / destroy) is deliberately outside vitest — covered manually below, no jsdom added.
 
-Svelte lifecycle (continue/regenerate/destroy) is deliberately outside vitest (no jsdom added) — covered manually below.
+## Verify manually
 
-## Manual verification
-
-1. curl the endpoint (Bearer, `-N`): full script with dupe + malformed; `&scenario=error` → `widget_error`; no token → 401; unowned chat_id → 403.
-2. Send a message → widget above the streaming answer: starting → streaming, steps advance with live durations, sources cite in, no glitch at the dupe/malformed frames. When the retrieval trace ends ahead of the answer, the last step stays spinning as "Generating answer…" and elapsed keeps running; the citation footer appears only when the answer itself finishes, and elapsed holds rather than snapping back to the mock's duration. Watch the timer for a couple of minutes — the digits should advance one second at a time without skipping.
-3. Collapse and expand — via the chevron or by clicking anywhere on the row: no horizontal shift, no scroll jump, no focus loss. Collapsed, hovering the stats shows the popover with the same sections; expanded, hovering shows nothing, because nothing is hidden. Source badges and titles open in a new tab and preview on hover, including near the sidebar and the top of the viewport, where an in-flow card would be clipped.
-4. Second tab, same chat → the expanded trace shows 2 sessions; close → the count disappears again (one viewer is the norm and stays silent). The "Session active" badge appears while another session's stream is open.
-5. Kill backend mid-generation → "reconnecting" appears in the trace (and stays — the client retries forever); restart → rejoins room, count restored, indicator goes quiet again.
+1. `curl -N` the endpoint with a Bearer token: full script with the duplicate and malformed frames; `&scenario=error` ends in `widget_error`; no token → 401; unowned chat → 403.
+2. Send a message. The widget streams steps with live durations and cites sources; no glitch at the hostile frames. When the trace ends before the answer, the last step stays spinning as "Generating answer…" — the footer only appears when the answer finishes, and elapsed holds rather than snapping back.
+3. Collapse and expand — chevron or anywhere on the row. Collapsed + hover shows the peek popover; expanded shows nothing (nothing is hidden). Source badges and titles open in a new tab and preview on hover, even near the sidebar and viewport edges.
+4. Open the chat in a second tab: both show 2 sessions. Close it: the count disappears (one session stays silent).
+5. Kill the backend mid-generation: "Reconnecting" with a blinking amber dot, tokens freeze, elapsed keeps counting. Restart: it rejoins the room and goes quiet.
 6. Regenerate → fresh widget, siblings intact. Continue → resets and restarts on the same id. Stop → terminal, no zombie updates.
-7. Navigate away mid-stream and back → fresh start (mock replay, accepted); back to a completed message → snapshot renders.
-8. Persistence: complete a message → reload the page → the trace is still there, no "Starting" flash. Continue → complete → reload (the newer session wins). Regenerate → fresh widget, the sibling's stored snapshot untouched. Hand-edit `liveSession` in the stored chat JSON to something malformed → the widget is simply absent, nothing crashes.
-9. A11y: with reduced motion enabled every indicator goes static (spinner → dot, no blink) and the entrance is opacity-only — activity is carried by the label's "…" and the live region; VoiceOver announces each status transition once — the elapsed/token tickers stay out of the live region and silent, and the token count is heard as "approximately", never "tilde". Check indicators in both light and dark themes.
-10. `npm run test:frontend` green.
+7. Navigate away mid-stream and back → fresh start (mock replays, accepted). Back to a completed message → the snapshot renders.
+8. Reload after completion → the trace is still there, no "Starting" flash. Hand-edit `liveSession` in the stored JSON to garbage → the widget is simply absent.
+9. Reduced motion → all indicators static, opacity-only entrance. VoiceOver announces each status transition once; the tickers stay silent; the token count is heard as "approximately".
+10. `npm run test:frontend` — green.
 
-## Production hardening
+## Before production
 
 - Emit widget events from the real pipeline (single source of truth), persist with the message, fan out via rooms.
 - Shared (Redis) room membership for multi-node presence.
-- Shared runtime-validated schema for the event contracts instead of convention.
+- Runtime-validated shared schema for the event contracts.
 - Rate-limit the SSE endpoint if it ever leaves dev-only registration.
 
 ## AI tools
 
-I ran a multi-model workflow with distinct roles: Fable 5 (Claude Code) for codebase exploration and plan authoring across five adversarial review rounds, GPT 5.6 Sol reviewing each revision for feedback and tradeoffs and later driving browser verification via Playwright MCP, and Opus 5 implementing the frozen plan in phased, test-gated, revertible commits. The architecture and tradeoffs are my decisions — component-owned cancellation, pure parser/reducer layering, real Socket.IO room presence around a dev-only SSE source, and the cut list above. I reviewed every change, ran the tests and manual scenarios, and can explain the complete implementation.
+I ran a multi-model workflow with distinct roles: Fable 5 (Claude Code) for codebase exploration and plan authoring across five adversarial review rounds, GPT 5.6 Sol reviewing each revision and later driving browser verification via Playwright MCP, and Opus 5 implementing the frozen plan in phased, test-gated commits. The architecture and tradeoffs are my decisions — component-owned cancellation, pure parser/reducer layering, real Socket.IO presence around a dev-only SSE source, and the cut list above. I reviewed every change, ran the tests and manual scenarios, and can explain the complete implementation.
 
-One upstream fix included (own commit): `+layout.svelte` registered Socket.IO reconnection events on the Socket instead of the Manager, so they never fired; this feature's connection indicator depends on them.
+One upstream fix included (own commit): `+layout.svelte` registered Socket.IO reconnection events on the Socket instead of the Manager, so they never fired. This feature's connection indicator depends on them.
