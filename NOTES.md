@@ -6,9 +6,9 @@ A real-time status widget for Open WebUI. It appears with each assistant respons
 
 ## Demo
 
-<video src="design/demo.mp4" controls width="720"></video>
+https://github.com/user-attachments/assets/cae08322-0c45-4a8d-b8cf-69499ddc0bf3
 
-**[▶ Watch the demo (37s)](design/demo.mp4)** — GitHub opens it in a built-in player. Recorded live: a web-search question, the widget streaming steps and sources beside the real answer, then settling into its citation footer.
+37 seconds, recorded live: a web-search question, the widget streaming steps and sources beside the real answer, then settling into its citation footer. If the player doesn't load, the video is also [here](design/demo.mp4).
 
 <p>
   <img src="design/showcase-light.png" width="49%" alt="All widget states, light theme" />
