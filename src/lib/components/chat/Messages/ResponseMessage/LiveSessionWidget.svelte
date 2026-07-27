@@ -615,7 +615,9 @@
 	.lsw {
 		--sp-text: #6b7280;
 		--sp-text-strong: #4b5563;
-		--sp-text-faint: #9ca3af;
+		/* Carries elapsed, tokens and step durations, so it is held to AA for body text
+		   (~4.9:1) rather than the sandbox's lighter value, which measured 2.4:1. */
+		--sp-text-faint: #6b7280;
 		--sp-dot: #9ca3af;
 		--sp-red: #dc2626;
 		--sp-green: #22c55e;
@@ -640,8 +642,9 @@
 	:global(.dark) .lsw {
 		--sp-text: #9ca3af;
 		--sp-text-strong: #9ca3af;
-		--sp-text-faint: #4b5563;
-		--sp-dot: #4b5563;
+		/* Same reasoning as light: the sandbox value measured 2.37:1 on this background. */
+		--sp-text-faint: #8b909b;
+		--sp-dot: #6b7280;
 		--sp-red: #f87171;
 		--sp-badge-bg: #262626;
 		--sp-badge-text: #9ca3af;
