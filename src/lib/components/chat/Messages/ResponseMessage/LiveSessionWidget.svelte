@@ -334,6 +334,7 @@
 						elementId={sourceCardId(source.n)}
 						content={source.title}
 						placement="top"
+						theme="transparent"
 						touch={false}
 						className="lsw-badge-wrap"
 						as="span"
@@ -355,7 +356,7 @@
 								<span class="hc-title">{source.title}</span>
 								<span class="hc-meta"
 									>{domainOf(source.url)}<ArrowUpRightBox
-										className="lsw-icon-xs"
+										className="size-2.5 shrink-0"
 										strokeWidth="2"
 									/></span
 								>
@@ -368,9 +369,15 @@
 				{#if sources.length}<span class="mid" aria-hidden="true">·</span>{/if}
 				<span class="lsw-conf">
 					<span class="lsw-label">{confidenceText} {$i18n.t('confidence')}</span>
-					<Tooltip content={confidenceHelp} placement="top" touch={false} as="span">
+					<Tooltip
+						content={confidenceHelp}
+						placement="top"
+						theme="transparent"
+						touch={false}
+						as="span"
+					>
 						<button type="button" class="lsw-info" aria-label={confidenceHelp}>
-							<InfoCircle className="lsw-icon" strokeWidth="2" />
+							<InfoCircle className="size-3" strokeWidth="2" />
 						</button>
 					</Tooltip>
 				</span>
@@ -381,88 +388,95 @@
 
 		<span class="lsw-tail">
 			<!--
-				Both props go empty when expanded: with only the content element emptied,
-				tippy still opened an empty box on hover. content === '' is what makes the
-				Tooltip destroy its instance outright.
+				Keyed on `expanded` so collapsing builds a fresh element and a fresh tippy
+				instance. tippy relocates its content element into document.body, which puts
+				it outside the DOM Svelte manages — reusing it across a destroy/recreate
+				cycle left tippy holding a detached node and showing an empty box.
+
+				The chevron stays outside the key, so re-keying never steals its focus.
 			-->
-			<Tooltip
-				elementId={expanded ? '' : popoverId}
-				content={expanded ? '' : $i18n.t('Session details')}
-				placement="top"
-				touch={false}
-				className="lsw-tail-inner"
-				as="span"
-			>
-				<span class="lsw-stats" aria-hidden="true">
-					<span>{elapsedText}</span>
-					<span class="stat-sep"></span>
-					<span>{tokensText} {$i18n.t('tokens')}</span>
-				</span>
-				<span class="sr-only">{statsSpokenText}</span>
-
-				<button
-					type="button"
-					class="lsw-chevron-btn"
-					aria-label={$i18n.t('Toggle session details')}
-					aria-expanded={expanded}
-					on:click={() => (expandedOverride = !expanded)}
+			{#key expanded}
+				<Tooltip
+					elementId={expanded ? '' : popoverId}
+					content={expanded ? '' : $i18n.t('Session details')}
+					placement="top"
+					theme="transparent"
+					touch={false}
+					className="lsw-tail-inner"
+					as="span"
 				>
-					<ChevronDown className="lsw-chevron" strokeWidth="2.5" />
-				</button>
+					<span class="lsw-stats" aria-hidden="true">
+						<span>{elapsedText}</span>
+						<span class="stat-sep"></span>
+						<span>{tokensText} {$i18n.t('tokens')}</span>
+					</span>
+					<span class="sr-only">{statsSpokenText}</span>
 
-				<!--
+					<!--
 					Handed to tippy as a DOM element rather than an HTML string, so Svelte
 					escapes the source titles for us. Only rendered while collapsed: expanded,
 					nothing is hidden, so the popover has nothing to reveal.
 				-->
-				<span slot="tooltip" id={popoverId}>
-					{#if !expanded}
-						<span class="pop">
-							{#if steps.length}
-								<span class="pop-sec">
-									<span class="pop-h">{$i18n.t('Steps')} ({steps.length})</span>
-									{#each steps as step (step.id)}
-										<span class="pop-row">
-											<span class="pop-row-label">{step.label}</span>
-											<b>{stepDuration(step, now)}</b>
-										</span>
-									{/each}
-								</span>
-							{/if}
-
-							{#if sources.length}
-								<span class="pop-sec">
-									<span class="pop-h pop-h-row">
-										<span>{$i18n.t('Sources')} ({sources.length})</span>
-										{#if confidenceText}
-											<span class="pop-h-side">{confidenceText} {$i18n.t('confidence')}</span>
-										{/if}
-									</span>
-									{#each sources as source (source.n)}
-										<span class="pop-row">
-											<span class="pop-src">
-												<span class="lsw-badge lsw-badge--static">{source.n}</span>
-												<span class="pop-src-title">{source.title}</span>
+					<span slot="tooltip" id={popoverId}>
+						{#if !expanded}
+							<span class="pop">
+								{#if steps.length}
+									<span class="pop-sec">
+										<span class="pop-h">{$i18n.t('Steps')} ({steps.length})</span>
+										{#each steps as step (step.id)}
+											<span class="pop-row">
+												<span class="pop-row-label">{step.label}</span>
+												<b>{stepDuration(step, now)}</b>
 											</span>
-										</span>
-									{/each}
-								</span>
-							{/if}
-
-							<span class="pop-sec">
-								<span class="pop-h">{$i18n.t('Status')}</span>
-								<span class="pop-row">
-									<span class="pop-conn">
-										<span class="dot" class:warn={showConnection} class:ok={!showConnection}></span>
-										{connectionLabel}
+										{/each}
 									</span>
-									<b>{sessionsText}</b>
+								{/if}
+
+								{#if sources.length}
+									<span class="pop-sec">
+										<span class="pop-h pop-h-row">
+											<span>{$i18n.t('Sources')} ({sources.length})</span>
+											{#if confidenceText}
+												<span class="pop-h-side">{confidenceText} {$i18n.t('confidence')}</span>
+											{/if}
+										</span>
+										{#each sources as source (source.n)}
+											<span class="pop-row">
+												<span class="pop-src">
+													<span class="lsw-badge lsw-badge--static">{source.n}</span>
+													<span class="pop-src-title">{source.title}</span>
+												</span>
+											</span>
+										{/each}
+									</span>
+								{/if}
+
+								<span class="pop-sec">
+									<span class="pop-h">{$i18n.t('Status')}</span>
+									<span class="pop-row">
+										<span class="pop-conn">
+											<span class="dot" class:warn={showConnection} class:ok={!showConnection}
+											></span>
+											{connectionLabel}
+										</span>
+										<b>{sessionsText}</b>
+									</span>
 								</span>
 							</span>
-						</span>
-					{/if}
-				</span>
-			</Tooltip>
+						{/if}
+					</span>
+				</Tooltip>
+			{/key}
+
+			<button
+				type="button"
+				class="lsw-chevron-btn"
+				aria-label={$i18n.t('Toggle session details')}
+				aria-expanded={expanded}
+				on:click={() => (expandedOverride = !expanded)}
+			>
+				<ChevronDown className="lsw-chevron" strokeWidth="2.5" />
+			</button>
 		</span>
 	</div>
 
@@ -508,9 +522,15 @@
 						{#if confidenceText}
 							<span class="lsw-conf sec-h-side">
 								<span>{confidenceText} {$i18n.t('confidence')}</span>
-								<Tooltip content={confidenceHelp} placement="top" touch={false} as="span">
+								<Tooltip
+									content={confidenceHelp}
+									placement="top"
+									theme="transparent"
+									touch={false}
+									as="span"
+								>
 									<button type="button" class="lsw-info" aria-label={confidenceHelp}>
-										<InfoCircle className="lsw-icon" strokeWidth="2" />
+										<InfoCircle className="size-3" strokeWidth="2" />
 									</button>
 								</Tooltip>
 							</span>
@@ -531,20 +551,21 @@
 									elementId={sourceRowCardId(source.n)}
 									content={source.title}
 									placement="top"
+									theme="transparent"
 									touch={false}
 									className="lsw-src-link"
 									as="span"
 								>
 									<a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
 									<span class="src-ext" aria-hidden="true"
-										><ArrowUpRightBox className="lsw-icon-xs" strokeWidth="2" /></span
+										><ArrowUpRightBox className="size-2.5 shrink-0" strokeWidth="2" /></span
 									>
 									<span slot="tooltip" id={sourceRowCardId(source.n)}>
 										<span class="hc">
 											<span class="hc-title">{source.title}</span>
 											<span class="hc-meta"
 												>{domainOf(source.url)}<ArrowUpRightBox
-													className="lsw-icon-xs"
+													className="size-2.5 shrink-0"
 													strokeWidth="2"
 												/></span
 											>
@@ -947,14 +968,6 @@
 		color: var(--sp-text-strong);
 		outline: none;
 	}
-	.lsw :global(.lsw-icon) {
-		width: 12px;
-		height: 12px;
-	}
-	.lsw :global(.lsw-icon-xs) {
-		width: 10px;
-		height: 10px;
-	}
 
 	/* ---------- citation badges ---------- */
 	.lsw-badges {
@@ -1031,22 +1044,50 @@
 		opacity: 1;
 	}
 
-	/* ---------- hover card bodies (rendered into tippy, not positioned here) ---------- */
+	/*
+	 * Card surfaces for anything tippy relocates into document.body. Those elements keep
+	 * their Svelte scope class but lose the `.lsw` ancestor, so custom properties defined
+	 * there no longer resolve — these rules are deliberately literal. The `transparent`
+	 * tippy theme zeroes tippy's own chrome so this is the only surface drawn.
+	 */
+	.pop,
+	.hc {
+		background: #ffffff;
+		color: #4b5563;
+		border: 1px solid #e4e4e7;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgb(0 0 0 / 0.14);
+		padding: 7px 9px;
+		text-align: left;
+	}
+	:global(.dark) .pop,
+	:global(.dark) .hc {
+		background: #1d1d21;
+		color: #9ca3af;
+		border-color: #26262b;
+	}
+
 	.hc {
 		display: grid;
 		gap: 1px;
 		max-width: 240px;
+		font-size: 11px;
+		line-height: 1.5;
 	}
 	.hc-title {
 		font-weight: 600;
 		white-space: normal;
+		color: #1c1c1f;
+	}
+	:global(.dark) .hc-title {
+		color: #ececef;
 	}
 	.hc-meta {
-		opacity: 0.75;
 		font-size: 10px;
 		display: inline-flex;
 		align-items: center;
 		gap: 3px;
+		opacity: 0.75;
 	}
 
 	/* ---------- popover (tippy content element) ---------- */
@@ -1055,15 +1096,19 @@
 		gap: 2px;
 		font-size: 10.5px;
 		line-height: 1.35;
+		width: max-content;
 		max-width: 280px;
 	}
 	.pop-sec {
 		display: block;
 	}
 	.pop-sec + .pop-sec {
-		border-top: 1px solid var(--sp-hairline);
+		border-top: 1px solid #e4e4e7;
 		margin-top: 5px;
 		padding-top: 4px;
+	}
+	:global(.dark) .pop-sec + .pop-sec {
+		border-top-color: #26262b;
 	}
 	.pop-h {
 		font:
@@ -1086,6 +1131,8 @@
 		text-transform: none;
 		letter-spacing: 0;
 		font-weight: 400;
+		font-family: inherit;
+		font-size: 10.5px;
 	}
 	.pop-row {
 		display: flex;
