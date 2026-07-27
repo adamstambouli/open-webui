@@ -278,6 +278,8 @@
 	$: popoverId = `lsw-popover-${chatId}-${messageId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 	$: sourceCardId = (n: number) => `${popoverId}-badge-${n}`;
 	$: sourceRowCardId = (n: number) => `${popoverId}-src-${n}`;
+	$: confidenceInfoId = `${popoverId}-conf`;
+	$: confidenceInfoSecId = `${popoverId}-conf-sec`;
 
 	/** Row clicks toggle, except where an inner control owns the interaction. */
 	const onRowClick = (event: MouseEvent) => {
@@ -370,6 +372,7 @@
 				<span class="lsw-conf">
 					<span class="lsw-label">{confidenceText} {$i18n.t('confidence')}</span>
 					<Tooltip
+						elementId={confidenceInfoId}
 						content={confidenceHelp}
 						placement="top"
 						theme="transparent"
@@ -379,6 +382,9 @@
 						<button type="button" class="lsw-info" aria-label={confidenceHelp}>
 							<InfoCircle className="size-3" strokeWidth="2" />
 						</button>
+						<span slot="tooltip" id={confidenceInfoId}>
+							<span class="hc hc-prose">{confidenceHelp}</span>
+						</span>
 					</Tooltip>
 				</span>
 			{/if}
@@ -523,6 +529,7 @@
 							<span class="lsw-conf sec-h-side">
 								<span>{confidenceText} {$i18n.t('confidence')}</span>
 								<Tooltip
+									elementId={confidenceInfoSecId}
 									content={confidenceHelp}
 									placement="top"
 									theme="transparent"
@@ -532,6 +539,9 @@
 									<button type="button" class="lsw-info" aria-label={confidenceHelp}>
 										<InfoCircle className="size-3" strokeWidth="2" />
 									</button>
+									<span slot="tooltip" id={confidenceInfoSecId}>
+										<span class="hc hc-prose">{confidenceHelp}</span>
+									</span>
 								</Tooltip>
 							</span>
 						{/if}
@@ -1076,6 +1086,12 @@
 		max-width: 240px;
 		font-size: 11px;
 		line-height: 1.5;
+	}
+	/* Help copy wraps; the title/domain previews do not. */
+	.hc-prose {
+		display: block;
+		max-width: 220px;
+		white-space: normal;
 	}
 	.hc-title {
 		font-weight: 600;
