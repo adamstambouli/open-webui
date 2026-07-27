@@ -402,6 +402,7 @@ describe('widgetElapsedMs', () => {
 	const ended: WidgetState = {
 		status: 'complete',
 		steps: [],
+		sources: [],
 		metrics: {},
 		startedAt: 1_000,
 		finishedAt: 7_800, // the scripted stream stopped here
@@ -436,13 +437,11 @@ describe('widgetReducer', () => {
 		const state = initialWidgetState(1000);
 		expect(state.status).toBe('starting');
 
-		const next = widgetReducer(state, {
-			kind: 'step',
-			messageId: 'm1',
-			id: 'parse',
-			label: 'Parsing',
-			status: 'running'
-		});
+		const next = widgetReducer(
+			state,
+			{ kind: 'step', messageId: 'm1', id: 'parse', label: 'Parsing', status: 'running' },
+			0
+		);
 		expect(next.status).toBe('streaming');
 		expect(next.startedAt).toBe(1000);
 	});
@@ -475,7 +474,7 @@ describe('widgetReducer', () => {
 			{ kind: 'step', messageId: 'm1', id: 'parse', label: 'Parsing', status: 'complete' },
 			frame
 		]);
-		const twice = widgetReducer(once, frame);
+		const twice = widgetReducer(once, frame, 0);
 
 		expect(twice).toEqual(once);
 		expect(twice.steps).toHaveLength(2);
@@ -486,26 +485,24 @@ describe('widgetReducer', () => {
 			{ kind: 'step', messageId: 'm1', id: 'parse', label: 'Parsing', status: 'complete' }
 		]);
 
-		const completed = widgetReducer(streaming, { kind: 'done', messageId: 'm1' });
+		const completed = widgetReducer(streaming, { kind: 'done', messageId: 'm1' }, 0);
 		expect(completed.status).toBe('complete');
 
-		const errored = widgetReducer(streaming, {
-			kind: 'error',
-			messageId: 'm1',
-			message: 'Retrieval unavailable'
-		});
+		const errored = widgetReducer(
+			streaming,
+			{ kind: 'error', messageId: 'm1', message: 'Retrieval unavailable' },
+			0
+		);
 		expect(errored.status).toBe('error');
 		expect(errored.errorMessage).toBe('Retrieval unavailable');
 
 		// A late delta must not reopen a finished widget.
-		const late = widgetReducer(completed, {
-			kind: 'step',
-			messageId: 'm1',
-			id: 'zombie',
-			label: 'Zombie',
-			status: 'running'
-		});
+		const late = widgetReducer(
+			completed,
+			{ kind: 'step', messageId: 'm1', id: 'zombie', label: 'Zombie', status: 'running' },
+			0
+		);
 		expect(late).toBe(completed);
-		expect(widgetReducer(errored, { kind: 'done', messageId: 'm1' })).toBe(errored);
+		expect(widgetReducer(errored, { kind: 'done', messageId: 'm1' }, 0)).toBe(errored);
 	});
 });

@@ -5,6 +5,8 @@
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import InfoCircle from '$lib/components/icons/InfoCircle.svelte';
+	import ArrowUpRightBox from '$lib/components/icons/ArrowUpRightBox.svelte';
 	import { socketStatus } from '$lib/stores';
 	import {
 		formatCompactCount,
@@ -15,7 +17,8 @@
 		widgetElapsedMs,
 		widgetKey,
 		type WidgetSnapshot,
-		type WidgetState
+		type WidgetState,
+		type WidgetStep
 	} from '$lib/widget/events';
 	import {
 		chatSessionInfo,
@@ -202,46 +205,84 @@
 		prevIsActive = isActive;
 	}
 
-	$: metricSummary = Object.entries(state?.metrics ?? {}).map(
-		([metricKey, metric]) =>
-			`${formatMetric(metricKey, metric.value)} ${metric.label.toLowerCase()}`
-	);
+	$: reconnecting = $socketStatus === 'reconnecting';
+	/** Healthy states stay silent on the line; the STATUS section always carries them. */
+	$: showConnection = $socketStatus !== 'connected';
+	$: isFooter = displayStatus === 'complete';
+	$: sources = state?.sources ?? [];
+	$: confidence = state?.metrics?.confidence;
 
-	// The last running step is the one being worked on; steps only ever move forward.
-	$: runningStep = (state?.steps ?? []).filter((step) => step.status === 'running').at(-1) ?? null;
+	/**
+	 * The trace can finish while the answer is still being written. Reporting that final
+	 * step as complete would claim finished work that isn't, so it renders as running
+	 * until the message itself is done.
+	 */
+	$: steps = (() => {
+		const raw = state?.steps ?? [];
+		if (!workflowDone || done || raw.length === 0) return raw;
+		return raw.map((step, index) =>
+			index === raw.length - 1 ? { ...step, status: 'running' as const, endedAt: undefined } : step
+		);
+	})();
 
-	/** The one line always on screen: what is happening right now, or how it ended. */
+	$: runningStep = steps.filter((step) => step.status === 'running').at(-1) ?? null;
+
+	/** `—` for a step the session killed: it has no honest duration. */
+	const stepDuration = (step: WidgetStep, nowMs: number) => {
+		if (step.status === 'error') return '—';
+		if (step.startedAt === undefined) return '';
+		const ms = (step.endedAt ?? nowMs) - step.startedAt;
+		return ms < 10_000 ? `${Math.max(0, ms / 1000).toFixed(1)}s` : formatElapsed(ms);
+	};
+
+	/** Priority: error > reconnecting takeover > current step > preparing. */
 	$: primaryLabel =
 		displayStatus === 'error'
 			? `${$i18n.t('Error')} · ${state?.errorMessage ?? $i18n.t('Stream failed')}`
-			: displayStatus === 'complete'
-				? [$i18n.t('Complete'), ...metricSummary].join(' · ')
+			: reconnecting
+				? // You care about the connection, not a stalled label; it returns with the socket.
+					$i18n.t('Reconnecting…')
 				: displayStatus === 'starting'
 					? $i18n.t('Preparing session…')
-					: workflowDone
-						? // The trace is done but the answer is not — the two-clock case.
-							$i18n.t('Retrieval complete · generating answer…')
-						: `${runningStep?.label ?? $i18n.t('Working')}…`;
+					: `${runningStep?.label ?? $i18n.t('Working')}…`;
 
-	$: statsText = `${formatElapsed(elapsedMs)} · ~ ${formatCompactCount(approxTokens)} ${$i18n.t('tokens')}`;
-	// Spoken as the compact count the visible line shows, not the raw integer behind it.
-	// Interpolated as `tokens`, not `count`, which i18next reserves for plural selection
-	// and types as a number — "5.1k" has no business driving plural rules.
-	$: statsSpokenText = $i18n.t('{{duration}}, approximately {{tokens}} tokens', {
-		duration: formatElapsed(elapsedMs),
+	$: elapsedText = formatElapsed(elapsedMs);
+	$: tokensText = `~${formatCompactCount(approxTokens)}`;
+	// Spoken as the compact count shown on screen, not the raw integer behind it, and
+	// interpolated as `tokens` — i18next reserves `count` for plural selection.
+	$: statsSpokenText = $i18n.t('{{duration}}, approximately {{tokens}} tokens received', {
+		duration: elapsedText,
 		tokens: formatCompactCount(approxTokens)
 	});
 
-	/** Healthy states stay silent; only exceptions earn a line in the trace. */
-	$: showConnection = $socketStatus !== 'connected';
+	$: sessionsText =
+		activeViewers === 1
+			? $i18n.t('1 session')
+			: $i18n.t('{{count}} sessions', { count: activeViewers });
 
-	$: tooltipText = [
-		primaryLabel,
-		statsSpokenText,
-		...(state?.steps ?? []).map((step) => `${step.label} — ${stepStatusLabel[step.status]}`),
-		...(showConnection ? [connectionLabel] : []),
-		...(activeViewers > 1 ? [$i18n.t('{{count}} sessions', { count: activeViewers })] : [])
-	].join('\n');
+	$: confidenceText = confidence ? formatMetric('confidence', confidence.value) : '';
+	$: confidenceHelp = $i18n.t(
+		'How strongly the retrieved sources support this answer, based on retrieval scoring. (Mock value in this dev build.)'
+	);
+
+	const domainOf = (url: string) => {
+		try {
+			return new URL(url).hostname;
+		} catch {
+			return url;
+		}
+	};
+
+	// The popover is rendered as Svelte markup and handed to tippy by element id, so
+	// interpolated source titles are escaped by the framework — no HTML is assembled here.
+	$: popoverId = `lsw-popover-${chatId}-${messageId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+
+	/** Row clicks toggle, except where an inner control owns the interaction. */
+	const onRowClick = (event: MouseEvent) => {
+		const target = event.target as HTMLElement | null;
+		if (target?.closest('a, button, .lsw-badge, .lsw-info')) return;
+		expandedOverride = !expanded;
+	};
 
 	$: statusLabel = {
 		starting: $i18n.t('Starting'),
@@ -263,143 +304,267 @@
 	};
 </script>
 
-<div class="live-session-widget {entered ? 'live-session-widget--in' : ''} w-full my-1.5 text-xs">
+<div class="lsw {entered ? 'lsw--in' : ''}" class:expanded>
 	<!--
-		The single live region. Ticking numbers (elapsed, tokens, viewers) stay outside it
-		on purpose — inside, a screen reader would announce them every second.
+		The single live region. Elapsed, tokens and viewer counts stay outside it on
+		purpose — inside, a screen reader would announce them every second.
 	-->
 	<span class="sr-only" role="status" aria-live="polite">{statusLabel}</span>
 
-	<Tooltip
-		content={tooltipText.replace(/\n/g, '<br/>')}
-		placement="top"
-		touch={false}
-		className="w-full"
-	>
-		<div class="flex items-center gap-1.5 w-full min-w-0">
+	<!-- svelte-ignore a11y-no-static-element-interactions a11y-click-events-have-key-events -->
+	<div class="lsw-line" on:click={onRowClick}>
+		{#if isActive}
+			<span class="marker" aria-hidden="true">
+				<!-- Taxonomy: spinning = data flowing, blinking amber = attempting, static = settled. -->
+				<span class="spinner" class:paused={reconnecting}></span>
+			</span>
+		{/if}
+
+		{#if isFooter}
 			<!--
-				Shimmer is the working indicator on this line, so it goes on the label itself
-				rather than a separate spinner.
+				Badges are the compact citation reference. Each is its own link with its own
+				preview; the cluster exists only as a suppression zone so hovering the gap
+				between badges does not flicker the row popover.
 			-->
-			<span
-				class="truncate min-w-0 {displayStatus === 'error'
-					? 'text-red-600 dark:text-red-400'
-					: isActive
-						? 'shimmer'
-						: 'text-gray-500 dark:text-gray-400'}"
-			>
-				{primaryLabel}
-			</span>
-
-			<span class="text-gray-400 dark:text-gray-600 tabular-nums shrink-0" aria-hidden="true">
-				({statsText})
-			</span>
-			<span class="sr-only">{statsSpokenText}</span>
-
-			<button
-				type="button"
-				class="shrink-0 p-0.5 -m-0.5 rounded text-gray-400 dark:text-gray-600 hover:text-gray-600
-					dark:hover:text-gray-400 focus-visible:outline-none focus-visible:ring-1
-					focus-visible:ring-gray-400 dark:focus-visible:ring-gray-600"
-				aria-label={$i18n.t('Toggle session details')}
-				aria-expanded={expanded}
-				on:click={() => (expandedOverride = !expanded)}
-			>
-				<ChevronDown
-					className="size-3 transition-transform motion-reduce:transition-none {expanded
-						? 'rotate-180'
-						: ''}"
-				/>
-			</button>
-		</div>
-	</Tooltip>
-
-	<!--
-		Indeterminate by construction: generative work has no known denominator, and a
-		step-count fraction would move backwards as new steps arrive. Decorative — the
-		line above carries the same information as text. Terminal states drop the rail
-		entirely rather than parking a full bar under a settled footer.
-	-->
-	{#if displayStatus === 'streaming' || displayStatus === 'error'}
-		<div
-			class="mt-1 h-0.5 w-full rounded-full overflow-hidden bg-gray-100 dark:bg-gray-850"
-			aria-hidden="true"
-		>
-			{#if displayStatus === 'streaming'}
-				<div class="rail-segment h-full w-1/3 rounded-full bg-gray-400 dark:bg-gray-600"></div>
-			{:else}
-				<div class="h-full w-full rounded-full bg-red-500/70"></div>
-			{/if}
-		</div>
-	{/if}
-
-	{#if expanded}
-		<div class="mt-1.5 flex flex-col gap-1.5 text-gray-500 dark:text-gray-400">
-			{#if state?.steps?.length}
-				<ol class="flex flex-col gap-0.5">
-					{#each state.steps as step (step.id)}
-						<li class="flex items-center gap-1.5 min-w-0">
-							<span
-								class="size-1.5 rounded-full shrink-0 {step.status === 'complete'
-									? 'bg-green-500'
-									: step.status === 'error'
-										? 'bg-red-500'
-										: 'bg-gray-400 dark:bg-gray-600'}"
-								aria-hidden="true"
-							></span>
-							<span
-								class="truncate min-w-0 {step.status === 'running'
-									? 'shimmer'
-									: 'text-gray-600 dark:text-gray-400'}"
+			<span class="lsw-badges">
+				{#each sources as source (source.n)}
+					<a
+						class="lsw-badge"
+						href={source.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						aria-label={$i18n.t('Source {{n}}: {{title}}', { n: source.n, title: source.title })}
+					>
+						{source.n}
+						<span class="hover-card">
+							<span class="hc-title">{source.title}</span>
+							<span class="hc-meta"
+								>{domainOf(source.url)}<ArrowUpRightBox
+									className="lsw-icon-xs"
+									strokeWidth="2"
+								/></span
 							>
-								{step.label}{step.status === 'running' ? '…' : ''}
-							</span>
-							<span class="sr-only">{stepStatusLabel[step.status]}</span>
-						</li>
-					{/each}
-				</ol>
+						</span>
+					</a>
+				{/each}
+			</span>
+			{#if confidenceText}
+				{#if sources.length}<span class="mid" aria-hidden="true">·</span>{/if}
+				<span class="lsw-conf">
+					<span class="lsw-label">{confidenceText} {$i18n.t('confidence')}</span>
+					<button type="button" class="lsw-info" aria-label={confidenceHelp}>
+						<InfoCircle className="lsw-icon" strokeWidth="2" />
+						<span class="hover-card hc-info" aria-hidden="true">{confidenceHelp}</span>
+					</button>
+				</span>
 			{/if}
+		{:else}
+			<span class="lsw-label" class:err={displayStatus === 'error'}>{primaryLabel}</span>
+		{/if}
 
-			{#if metricSummary.length || showConnection || activeViewers > 1 || session?.status === 'streaming'}
-				<div class="flex flex-wrap items-center gap-x-2 gap-y-1 tabular-nums">
-					{#each metricSummary as entry (entry)}
-						<span>{entry}</span>
-					{/each}
+		<span class="lsw-tail">
+			<Tooltip
+				elementId={popoverId}
+				placement="top"
+				touch={false}
+				className="lsw-tail-inner"
+				as="span"
+			>
+				<span class="lsw-stats" aria-hidden="true">
+					<span>{elapsedText}</span>
+					<span class="stat-sep"></span>
+					<span>{tokensText} {$i18n.t('tokens')}</span>
+				</span>
+				<span class="sr-only">{statsSpokenText}</span>
 
-					<!-- Healthy connections say nothing; only trouble is worth the pixels. -->
-					{#if showConnection}
-						<span class="flex items-center gap-1 min-w-0">
-							<span
-								class="size-1.5 rounded-full shrink-0 {$socketStatus === 'reconnecting'
-									? 'bg-amber-500'
-									: 'bg-gray-400 dark:bg-gray-600'}"
-								aria-hidden="true"
-							></span>
-							<span class="truncate">{connectionLabel}</span>
+				<button
+					type="button"
+					class="lsw-chevron-btn"
+					aria-label={$i18n.t('Toggle session details')}
+					aria-expanded={expanded}
+					on:click={() => (expandedOverride = !expanded)}
+				>
+					<ChevronDown className="lsw-chevron" strokeWidth="2.5" />
+				</button>
+
+				<!--
+					Handed to tippy as a DOM element rather than an HTML string, so Svelte
+					escapes the source titles for us. Only rendered while collapsed: expanded,
+					nothing is hidden, so the popover has nothing to reveal.
+				-->
+				<span slot="tooltip" id={popoverId}>
+					{#if !expanded}
+						<span class="pop">
+							{#if steps.length}
+								<span class="pop-sec">
+									<span class="pop-h">{$i18n.t('Steps')} ({steps.length})</span>
+									{#each steps as step (step.id)}
+										<span class="pop-row">
+											<span class="pop-row-label">{step.label}</span>
+											<b>{stepDuration(step, now)}</b>
+										</span>
+									{/each}
+								</span>
+							{/if}
+
+							{#if sources.length}
+								<span class="pop-sec">
+									<span class="pop-h pop-h-row">
+										<span>{$i18n.t('Sources')} ({sources.length})</span>
+										{#if confidenceText}
+											<span class="pop-h-side">{confidenceText} {$i18n.t('confidence')}</span>
+										{/if}
+									</span>
+									{#each sources as source (source.n)}
+										<span class="pop-row">
+											<span class="pop-src">
+												<span class="lsw-badge lsw-badge--static">{source.n}</span>
+												<span class="pop-src-title">{source.title}</span>
+											</span>
+										</span>
+									{/each}
+								</span>
+							{/if}
+
+							<span class="pop-sec">
+								<span class="pop-h">{$i18n.t('Status')}</span>
+								<span class="pop-row">
+									<span class="pop-conn">
+										<span class="dot" class:warn={showConnection} class:ok={!showConnection}></span>
+										{connectionLabel}
+									</span>
+									<b>{sessionsText}</b>
+								</span>
+							</span>
 						</span>
 					{/if}
+				</span>
+			</Tooltip>
+		</span>
+	</div>
 
-					<!-- One viewer is the norm and not worth reporting. -->
-					{#if activeViewers > 1}
-						<span>{$i18n.t('{{count}} sessions', { count: activeViewers })}</span>
-					{/if}
+	<div class="lsw-details">
+		<div class="lsw-details-inner">
+			{#if steps.length}
+				<div class="lsw-sec">
+					<div class="lsw-sec-h">{$i18n.t('Steps')} ({steps.length})</div>
+					<ol class="lsw-steps">
+						{#each steps as step (step.id)}
+							<li>
+								<span class="marker" aria-hidden="true">
+									{#if step.status === 'error'}
+										<span class="dot bad"></span>
+									{:else if step.status === 'running'}
+										<!-- Static amber while reconnecting: the step is not retrying, the socket is. -->
+										{#if reconnecting}
+											<span class="dot warn"></span>
+										{:else}
+											<span class="spinner mini"></span>
+										{/if}
+									{:else}
+										<span class="dot ok"></span>
+									{/if}
+								</span>
+								<span class="lsw-step-label"
+									>{step.label}{step.status === 'running' ? '…' : ''}</span
+								>
+								<span class="sr-only">{stepStatusLabel[step.status]}</span>
+								<span class="step-dur">{stepDuration(step, now)}</span>
+							</li>
+						{/each}
+					</ol>
+				</div>
+			{/if}
 
-					<!--
-						The backend emits 'complete' when the scripted stream ends or is cancelled,
-						which says nothing about the answer — so only the open state is shown.
-					-->
-					{#if session?.status === 'streaming'}
-						<span>{$i18n.t('Session active')}</span>
-					{/if}
+			{#if sources.length}
+				<div class="lsw-sec">
+					<div class="lsw-sec-h sec-h-row">
+						<span>{$i18n.t('Sources')} ({sources.length})</span>
+						{#if confidenceText}
+							<span class="lsw-conf sec-h-side">
+								<span>{confidenceText} {$i18n.t('confidence')}</span>
+								<button type="button" class="lsw-info" aria-label={confidenceHelp}>
+									<InfoCircle className="lsw-icon" strokeWidth="2" />
+									<span class="hover-card hc-info" aria-hidden="true">{confidenceHelp}</span>
+								</button>
+							</span>
+						{/if}
+					</div>
+					<ul class="lsw-srcs">
+						{#each sources as source (source.n)}
+							<li>
+								<span class="marker" aria-hidden="true">
+									<span class="lsw-badge lsw-badge--static">{source.n}</span>
+								</span>
+								<a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
+								<span class="src-ext" aria-hidden="true"
+									><ArrowUpRightBox className="lsw-icon-xs" strokeWidth="2" /></span
+								>
+								<!-- Anchored to the row, never inside the truncating link: an
+									 overflow:hidden ancestor would clip it invisible. -->
+								<span class="hover-card src-prev">
+									<span class="hc-title">{source.title}</span>
+									<span class="hc-meta"
+										>{domainOf(source.url)}<ArrowUpRightBox
+											className="lsw-icon-xs"
+											strokeWidth="2"
+										/></span
+									>
+								</span>
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
+
+			<div class="lsw-sec">
+				<div class="lsw-sec-h">{$i18n.t('Status')}</div>
+				<div class="lsw-status-row">
+					<span class="conn-row">
+						<span class="marker" aria-hidden="true">
+							<span
+								class="dot"
+								class:warn={showConnection}
+								class:ok={!showConnection}
+								class:blink={reconnecting}
+							></span>
+						</span>
+						{connectionLabel}
+					</span>
+					<span class="tabnum">{sessionsText}</span>
+				</div>
+			</div>
+
+			{#if displayStatus === 'error'}
+				<div class="lsw-sec">
+					<div class="lsw-sec-h">{$i18n.t('Error')}</div>
+					<div class="lsw-err">{state?.errorMessage ?? $i18n.t('Stream failed')}</div>
 				</div>
 			{/if}
 		</div>
-	{/if}
+	</div>
 </div>
 
 <style>
-	/* Interruptible transition rather than an animation, and never from scale(0). */
-	.live-session-widget {
+	/* Tokens mirror the sandbox so light/dark stay in one place. */
+	.lsw {
+		--sp-text: #6b7280;
+		--sp-text-strong: #4b5563;
+		--sp-text-faint: #9ca3af;
+		--sp-dot: #9ca3af;
+		--sp-red: #dc2626;
+		--sp-green: #22c55e;
+		--sp-amber: #f59e0b;
+		--sp-badge-bg: #f3f4f6;
+		--sp-badge-text: #6b7280;
+		--sp-card-bg: #ffffff;
+		--sp-ink: #1c1c1f;
+		--sp-hairline: #e4e4e7;
+
+		width: 100%;
+		margin: 6px 0;
+		font-size: 12px;
+		line-height: 1.35;
 		opacity: 0;
 		transform: translateY(4px);
 		transition:
@@ -407,66 +572,567 @@
 			transform 150ms ease-out;
 	}
 
-	.live-session-widget--in {
+	:global(.dark) .lsw {
+		--sp-text: #9ca3af;
+		--sp-text-strong: #9ca3af;
+		--sp-text-faint: #4b5563;
+		--sp-dot: #4b5563;
+		--sp-red: #f87171;
+		--sp-badge-bg: #262626;
+		--sp-badge-text: #9ca3af;
+		--sp-card-bg: #1d1d21;
+		--sp-ink: #ececef;
+		--sp-hairline: #26262b;
+	}
+
+	.lsw--in {
 		opacity: 1;
 		transform: translateY(0);
 	}
 
-	.rail-segment {
-		animation: rail-slide 1.4s ease-in-out infinite;
+	/* 3px gap everywhere a marker leads a label: the slot's own centering already pads
+	   small dots, so 3px keeps the VISUAL gap consistent with plain dot+text rows. */
+	.lsw-line {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		min-width: 0;
+		cursor: pointer;
 	}
 
-	/*
-	 * app.css:214 writes the dark-mode shimmer as `:global(.dark) .shimmer` — Svelte
-	 * syntax in a plain stylesheet, so it ships literally and never matches, leaving
-	 * dark-mode shimmer text stuck on the light gradient. Shimmer is this widget's only
-	 * working indicator on the collapsed line, so it is re-declared here, scoped, rather
-	 * than repairing a global rule the rest of the app also renders against.
-	 */
-	:global(.dark) .live-session-widget :global(.shimmer) {
-		background: linear-gradient(
-			110deg,
-			#9a9a9a 0%,
-			#9a9a9a 43%,
-			#5e5e5e 50%,
-			#9a9a9a 57%,
-			#9a9a9a 100%
-		);
-		background-size: 200% 100%;
-		background-clip: text;
-		-webkit-background-clip: text;
-		-webkit-text-fill-color: transparent;
-		color: #9a9a9a;
+	/* Row hover lifts everything toward foreground — the row is the disclosure control. */
+	.lsw-line:hover .lsw-label {
+		color: var(--sp-text-strong);
+	}
+	.lsw-line:hover .lsw-label.err {
+		color: var(--sp-red);
+	}
+	.lsw-line:hover .lsw-stats {
+		color: var(--sp-text);
+	}
+	.lsw-line:hover .lsw-chevron-btn {
+		color: var(--sp-text-strong);
 	}
 
-	@keyframes rail-slide {
-		0% {
-			transform: translateX(-100%);
+	.lsw-label {
+		color: var(--sp-text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+		transition: color 100ms ease;
+	}
+	.lsw-label.err {
+		color: var(--sp-red);
+	}
+
+	.lsw-tail {
+		margin-left: auto;
+		flex-shrink: 0;
+	}
+	/* Tooltip renders this element, so it is out of scope for Svelte's CSS scoping. */
+	.lsw :global(.lsw-tail-inner) {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.lsw-stats {
+		color: var(--sp-text-faint);
+		font-variant-numeric: tabular-nums;
+		display: inline-flex;
+		align-items: center;
+		transition: color 100ms ease;
+	}
+	.stat-sep {
+		width: 12px;
+	}
+	.tabnum {
+		font-variant-numeric: tabular-nums;
+	}
+
+	.lsw-chevron-btn {
+		appearance: none;
+		border: 0;
+		background: none;
+		padding: 4px;
+		margin: -4px;
+		flex-shrink: 0;
+		color: var(--sp-text-faint);
+		cursor: pointer;
+		border-radius: 4px;
+		display: inline-flex;
+		transition: color 100ms ease;
+	}
+	.lsw-chevron-btn:hover {
+		color: var(--sp-text-strong);
+	}
+	.lsw-chevron-btn:focus-visible {
+		outline: 1px solid var(--sp-text-faint);
+	}
+	.lsw :global(.lsw-chevron) {
+		width: 12px;
+		height: 12px;
+		transition: transform 150ms ease;
+	}
+	.lsw.expanded :global(.lsw-chevron) {
+		transform: rotate(180deg);
+	}
+
+	/* Every leading indicator centers in the same fixed slot, so labels across the
+	   primary line, steps and sources all align on one axis. */
+	.marker {
+		width: 15px;
+		height: 15px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.spinner {
+		flex-shrink: 0;
+		width: 11px;
+		height: 11px;
+		border-radius: 999px;
+		border: 1.5px solid var(--sp-text-faint);
+		border-top-color: transparent;
+		animation: lsw-spin 650ms linear infinite;
+	}
+	.spinner.mini {
+		width: 8px;
+		height: 8px;
+		border-width: 1.25px;
+	}
+	/* "Attempting, no response yet" — distinct from spinning (data flowing) and from
+	   static (settled). Hard steps, no easing. */
+	.spinner.paused {
+		border: 0;
+		background: var(--sp-amber);
+		width: 6px;
+		height: 6px;
+		animation: lsw-blink 1s steps(1) infinite;
+	}
+	@keyframes lsw-spin {
+		to {
+			transform: rotate(360deg);
 		}
+	}
+	@keyframes lsw-blink {
+		0%,
+		49% {
+			opacity: 1;
+		}
+		50%,
 		100% {
-			transform: translateX(300%);
+			opacity: 0.25;
 		}
 	}
 
-	/* Reduced does not mean zero: opacity fades stay, movement and shimmer go. */
+	.dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 999px;
+		flex-shrink: 0;
+		background: var(--sp-dot);
+	}
+	.dot.ok {
+		background: var(--sp-green);
+	}
+	.dot.warn {
+		background: var(--sp-amber);
+	}
+	.dot.bad {
+		background: var(--sp-red);
+	}
+	/* Blink follows the word: only elements that say "Reconnecting" blink. */
+	.dot.blink {
+		animation: lsw-blink 1s steps(1) infinite;
+	}
+
+	.mid {
+		color: var(--sp-text-faint);
+		margin: 0 2px;
+	}
+
+	/* Expand/collapse via the grid-rows 0fr->1fr trick — no JS measuring. visibility
+	   flips after the transition so collapsed content is never tabbable. */
+	.lsw-details {
+		display: grid;
+		grid-template-rows: 0fr;
+		opacity: 0;
+		visibility: hidden;
+		color: var(--sp-text);
+		transition:
+			grid-template-rows 200ms ease-out,
+			opacity 150ms ease-out,
+			visibility 0s linear 200ms;
+	}
+	.lsw.expanded .lsw-details {
+		grid-template-rows: 1fr;
+		opacity: 1;
+		visibility: visible;
+		transition:
+			grid-template-rows 200ms ease-out,
+			opacity 150ms ease-out,
+			visibility 0s;
+	}
+	/* The rail sits under the CENTER of the 15px marker column. Spacing lives OUTSIDE
+	   the border so the rule starts at the first section label, not the line above. */
+	.lsw-details-inner {
+		overflow: hidden;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		margin-top: 8px;
+		margin-left: 7px;
+		padding-left: 12px;
+		border-left: 1px solid var(--sp-hairline);
+	}
+
+	/* No horizontal rules: the rail, the mono labels and the gaps already encode
+	   section boundaries. Uniform header height keeps label->body rhythm constant. */
+	.lsw-sec {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.lsw-sec-h {
+		font:
+			600 9px/1 ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			monospace;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--sp-text-faint);
+		min-height: 15px;
+		display: flex;
+		align-items: center;
+	}
+	.lsw-sec > :not(.lsw-sec-h) {
+		padding-left: 6px;
+	}
+	.sec-h-row {
+		justify-content: space-between;
+		gap: 10px;
+	}
+	.sec-h-side {
+		font: 400 11px/1.2 inherit;
+		text-transform: none;
+		letter-spacing: 0;
+		color: var(--sp-text);
+	}
+
+	.lsw-steps,
+	.lsw-srcs {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.lsw-steps li,
+	.lsw-srcs li {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		min-width: 0;
+		position: relative;
+	}
+	.lsw-srcs li {
+		cursor: pointer;
+	}
+	.lsw-step-label {
+		color: var(--sp-text-strong);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.step-dur {
+		margin-left: auto;
+		color: var(--sp-text-faint);
+		font-variant-numeric: tabular-nums;
+		flex-shrink: 0;
+		padding-left: 10px;
+	}
+
+	.lsw-status-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		width: 100%;
+	}
+	.conn-row {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	.lsw-err {
+		color: var(--sp-red);
+	}
+
+	/* Confidence and its icon are one unit — no line-level gap between them. */
+	.lsw-conf {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		min-width: 0;
+	}
+	.lsw-info {
+		appearance: none;
+		border: 0;
+		background: none;
+		padding: 0;
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		color: var(--sp-text-faint);
+		cursor: help;
+		flex-shrink: 0;
+	}
+	.lsw-info:hover,
+	.lsw-info:focus-visible {
+		color: var(--sp-text-strong);
+		outline: none;
+	}
+	.lsw :global(.lsw-icon) {
+		width: 12px;
+		height: 12px;
+	}
+	.lsw :global(.lsw-icon-xs) {
+		width: 10px;
+		height: 10px;
+	}
+
+	/* ---------- citation badges ---------- */
+	.lsw-badges {
+		display: inline-flex;
+		gap: 3px;
+		align-items: center;
+	}
+	.lsw-badge {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 15px;
+		height: 15px;
+		padding: 0 3px;
+		border-radius: 4px;
+		background: var(--sp-badge-bg);
+		color: var(--sp-badge-text);
+		font-size: 10px;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		transition:
+			background 100ms ease,
+			color 100ms ease;
+	}
+	.lsw-badge--static {
+		cursor: default;
+	}
+	.lsw-badge:hover,
+	.lsw-badge:focus-visible {
+		color: var(--sp-ink);
+		outline: none;
+		background: color-mix(in srgb, var(--sp-badge-text) 22%, var(--sp-badge-bg));
+	}
+
+	.lsw-srcs a {
+		color: var(--sp-text-strong);
+		text-decoration: underline;
+		text-decoration-color: var(--sp-text-faint);
+		text-underline-offset: 2px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* Group hover: badge, title and the new-tab hint light together, either way round. */
+	.lsw-srcs li:hover a,
+	.lsw-srcs li:focus-within a {
+		color: var(--sp-ink);
+	}
+	.lsw-srcs li:hover .lsw-badge,
+	.lsw-srcs li:focus-within .lsw-badge {
+		color: var(--sp-ink);
+		background: color-mix(in srgb, var(--sp-badge-text) 22%, var(--sp-badge-bg));
+	}
+	.src-ext {
+		display: inline-flex;
+		color: var(--sp-text-faint);
+		opacity: 0;
+		transition: opacity 100ms ease;
+		flex-shrink: 0;
+	}
+	.lsw-srcs li:hover .src-ext,
+	.lsw-srcs li:focus-within .src-ext {
+		opacity: 1;
+	}
+
+	/* ---------- hover cards ---------- */
+	.hover-card {
+		position: absolute;
+		bottom: calc(100% + 6px);
+		padding: 8px 10px;
+		border-radius: 8px;
+		border: 1px solid var(--sp-hairline);
+		background: var(--sp-card-bg);
+		box-shadow: 0 4px 16px rgb(0 0 0 / 0.14);
+		font-size: 11px;
+		line-height: 1.5;
+		font-weight: 400;
+		color: var(--sp-text-strong);
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 120ms ease-out;
+		z-index: 10;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 230px;
+	}
+	.hc-info {
+		width: 200px;
+	}
+	.lsw-badge:hover .hover-card,
+	.lsw-badge:focus-visible .hover-card,
+	.lsw-info:hover .hover-card,
+	.lsw-info:focus-visible .hover-card {
+		opacity: 1;
+	}
+	.src-prev {
+		left: 21px;
+		transform: none;
+		bottom: calc(100% + 4px);
+	}
+	.lsw-srcs li:hover .src-prev,
+	.lsw-srcs li:focus-within .src-prev {
+		opacity: 1;
+	}
+	.hc-title {
+		font-weight: 600;
+		color: var(--sp-ink);
+		display: block;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.hc-meta {
+		color: var(--sp-text-faint);
+		font-size: 10px;
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+	}
+
+	/* ---------- popover (tippy content element) ---------- */
+	.pop {
+		display: grid;
+		gap: 2px;
+		font-size: 10.5px;
+		line-height: 1.35;
+		max-width: 280px;
+	}
+	.pop-sec {
+		display: block;
+	}
+	.pop-sec + .pop-sec {
+		border-top: 1px solid var(--sp-hairline);
+		margin-top: 5px;
+		padding-top: 4px;
+	}
+	.pop-h {
+		font:
+			600 9px/1 ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			monospace;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		opacity: 0.7;
+		margin: 1px 0 3px;
+		display: block;
+	}
+	.pop-h-row {
+		display: flex;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.pop-h-side {
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: 400;
+	}
+	.pop-row {
+		display: flex;
+		justify-content: space-between;
+		gap: 12px;
+		align-items: baseline;
+		min-width: 0;
+	}
+	.pop-row-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.pop-row b {
+		font-weight: 500;
+		font-variant-numeric: tabular-nums;
+		flex-shrink: 0;
+	}
+	.pop-src {
+		display: inline-flex;
+		gap: 5px;
+		align-items: flex-start;
+		min-width: 0;
+	}
+	.pop-src-title {
+		white-space: normal;
+	}
+	.pop-conn {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+	}
+
+	/* Reduced motion: fully static — blinking is motion too. Activity is carried by the
+	   "…" on the label and the live region, the same signal screen readers get. */
 	@media (prefers-reduced-motion: reduce) {
-		.live-session-widget {
+		.lsw {
 			transform: none;
 			transition: opacity 150ms ease-out;
 		}
-
-		.live-session-widget--in {
+		.lsw--in {
 			transform: none;
 		}
-
-		.rail-segment {
+		.spinner {
+			border: 0;
+			background: var(--sp-text-faint);
+			width: 6px;
+			height: 6px;
 			animation: none;
-			width: 100%;
-			opacity: 0.6;
 		}
-
-		.live-session-widget :global(.shimmer) {
+		/* .spinner.paused outranks .spinner, so its blink must be killed explicitly. */
+		.spinner.paused {
+			background: var(--sp-amber);
 			animation: none;
+		}
+		.dot.blink {
+			animation: none;
+		}
+		.lsw :global(.lsw-chevron) {
+			transition: none;
+		}
+		.lsw-details,
+		.lsw.expanded .lsw-details {
+			transition: none;
 		}
 	}
 </style>

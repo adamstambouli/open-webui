@@ -180,6 +180,7 @@ describe('runWidgetStream', () => {
 			[KEY]: {
 				status: 'complete',
 				steps: [{ id: 'stale', label: 'Stale', status: 'complete' }],
+				sources: [],
 				metrics: {},
 				startedAt: 1,
 				finishedAt: 2
@@ -206,7 +207,7 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 		expect(get(widgetStates)[KEY]).toBeUndefined(); // nothing to finalize
 
 		widgetStates.set({
-			[KEY]: { status: 'streaming', steps: [], metrics: {}, startedAt: 1 }
+			[KEY]: { status: 'streaming', steps: [], sources: [], metrics: {}, startedAt: 1 }
 		});
 		finalizeWidget('c1', 'm1', 'complete');
 		expect(get(widgetStates)[KEY].status).toBe('complete');
@@ -220,7 +221,14 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 		// The scripted stream ends at widget_done; the answer keeps going for far longer,
 		// and it is the generation ending that ends the session and stops the timer.
 		widgetStates.set({
-			[KEY]: { status: 'complete', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+			[KEY]: {
+				status: 'complete',
+				steps: [],
+				sources: [],
+				metrics: {},
+				startedAt: 1,
+				finishedAt: 2
+			}
 		});
 
 		finalizeWidget('c1', 'm1', 'complete');
@@ -235,7 +243,14 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 		// The component checks "generation done and unstamped?" on every update rather
 		// than trying to catch the single moment `done` flips — so this runs repeatedly.
 		widgetStates.set({
-			[KEY]: { status: 'complete', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+			[KEY]: {
+				status: 'complete',
+				steps: [],
+				sources: [],
+				metrics: {},
+				startedAt: 1,
+				finishedAt: 2
+			}
 		});
 
 		finalizeWidget('c1', 'm1', 'complete');
@@ -250,7 +265,7 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 
 	it('keeps a stream error even when the generation ends cleanly', () => {
 		widgetStates.set({
-			[KEY]: { status: 'error', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+			[KEY]: { status: 'error', steps: [], sources: [], metrics: {}, startedAt: 1, finishedAt: 2 }
 		});
 
 		finalizeWidget('c1', 'm1', 'complete');
@@ -267,6 +282,7 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 			[KEY]: {
 				status: 'complete',
 				steps: [],
+				sources: [],
 				metrics: {},
 				startedAt: 1,
 				finishedAt: 2,
@@ -286,7 +302,14 @@ describe('finalizeWidget / clearWidgetIfActive', () => {
 
 	it('keeps terminal snapshots when clearing', () => {
 		widgetStates.set({
-			[KEY]: { status: 'complete', steps: [], metrics: {}, startedAt: 1, finishedAt: 2 }
+			[KEY]: {
+				status: 'complete',
+				steps: [],
+				sources: [],
+				metrics: {},
+				startedAt: 1,
+				finishedAt: 2
+			}
 		});
 		clearWidgetIfActive('c1', 'm1');
 		expect(get(widgetStates)[KEY]).toBeDefined();
