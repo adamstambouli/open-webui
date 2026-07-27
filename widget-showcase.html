@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LiveSessionWidget — Final Design Showcase</title>
+<style>
+	:root {
+		--page: #fafafa; --ink: #1c1c1f; --muted: #71717a; --hairline: #e4e4e7;
+		--canvas: #ffffff; --chip: #ffffff; --chip-active: #eef1ff; --accent: #4f63d2;
+		--sp-text: #6b7280; --sp-text-strong: #4b5563; --sp-text-faint: #9ca3af;
+		--sp-dot: #9ca3af; --sp-red: #dc2626; --sp-green: #22c55e; --sp-amber: #f59e0b;
+		--sp-badge-bg: #f3f4f6; --sp-badge-text: #6b7280; --sp-card-bg: #ffffff;
+	}
+	.dark {
+		--page: #111113; --ink: #ececef; --muted: #9d9da6; --hairline: #26262b;
+		--canvas: #171717; --chip: #1d1d21; --chip-active: #23284a; --accent: #8f9dff;
+		--sp-text: #9ca3af; --sp-text-strong: #9ca3af; --sp-text-faint: #4b5563;
+		--sp-dot: #4b5563; --sp-red: #f87171;
+		--sp-badge-bg: #262626; --sp-badge-text: #9ca3af; --sp-card-bg: #1d1d21;
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; background: var(--page); color: var(--ink);
+		font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+	main { max-width: 660px; margin: 0 auto; padding: 20px 20px 80px; }
+	header.bar { position: sticky; top: 0; z-index: 20; background: var(--page);
+		border-bottom: 1px solid var(--hairline); padding: 12px 0 10px;
+		display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+	h1 { font-size: 15px; font-weight: 650; margin: 0 10px 0 0; letter-spacing: -0.01em; }
+	.sub { font-size: 12px; color: var(--muted); width: 100%; margin-top: 2px; }
+	.ctl { display: flex; align-items: center; gap: 6px; }
+	.ctl-label { font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+		text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+	.seg { display: inline-flex; border: 1px solid var(--hairline); border-radius: 7px; overflow: hidden; }
+	.seg button { appearance: none; border: 0; background: var(--chip); color: var(--muted);
+		font: 500 12px/1 inherit; padding: 6px 10px; cursor: pointer; }
+	.seg button + button { border-left: 1px solid var(--hairline); }
+	.seg button[aria-pressed='true'] { background: var(--chip-active); color: var(--accent); font-weight: 650; }
+	label.chk { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; }
+	label.chk input { accent-color: var(--accent); }
+
+	section.state { margin-top: 34px; }
+	.state-name { font-size: 13px; font-weight: 650; }
+	.card { border: 1px solid var(--hairline); border-radius: 10px; background: var(--canvas); margin-top: 8px; }
+	.card-canvas { padding: 12px 14px 16px; }
+	.try { margin: 8px 2px 0; font-size: 12px; color: var(--muted); }
+	.try b { font-weight: 600; color: var(--ink); }
+	.try ul { margin: 4px 0 0; padding-left: 18px; }
+	.try li { margin: 2px 0; }
+
+	/* ============ widget (final design) ============ */
+	.lsw { width: 100%; margin: 6px 0; font-size: 12px; line-height: 1.35; }
+	.line-wrap { position: relative; }
+	.lsw-line { display: flex; align-items: center; gap: 3px; min-width: 0; cursor: pointer; }
+	.lsw-label, .lsw-stats, .lsw-chevron-btn { transition: color 100ms ease; }
+	.lsw-line:hover .lsw-label:not(.err) { color: var(--sp-text-strong); }
+	.lsw-line:hover .lsw-stats { color: var(--sp-text); }
+	.lsw-line:hover .lsw-chevron-btn { color: var(--sp-text-strong); }
+	.lsw-label { color: var(--sp-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+	.lsw-label.err { color: var(--sp-red); }
+	.lsw-tail { position: relative; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+	.lsw-stats { color: var(--sp-text-faint); font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; }
+	.stat-sep { width: 12px; }
+	.lsw-chevron-btn { appearance: none; border: 0; background: none; padding: 4px; margin: -4px;
+		flex-shrink: 0; color: var(--sp-text-faint); cursor: pointer; border-radius: 4px; display: inline-flex; }
+	.lsw-chevron-btn:focus-visible { outline: 1px solid var(--sp-text-faint); }
+	.lsw-chevron { width: 12px; height: 12px; transition: transform 150ms ease; }
+	.lsw.expanded .lsw-chevron { transform: rotate(180deg); }
+
+	.hover-card { position: absolute; bottom: calc(100% + 6px); padding: 8px 10px; border-radius: 8px;
+		border: 1px solid var(--hairline); background: var(--sp-card-bg);
+		box-shadow: 0 4px 16px rgb(0 0 0 / 0.14); font-size: 11px; line-height: 1.5;
+		color: var(--sp-text-strong); opacity: 0; pointer-events: none;
+		transition: opacity 120ms ease-out; z-index: 10; }
+	.line-card-r4 { right: 0; width: max-content; max-width: 280px; display: grid; gap: 2px;
+		padding: 7px 9px; font-size: 10.5px; line-height: 1.35; }
+	.line-wrap:hover:not(:has(.src-badges:hover, .info:hover)) .line-card-r4,
+	.lsw-tail:has(:focus-visible) .line-card-r4 { opacity: 1; }
+	.lsw.expanded .line-card-r4 { display: none; }
+	.line-card-r4 .row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; min-width: 0; }
+	.line-card-r4 .row > span { color: var(--sp-text-faint); min-width: 0; }
+	.line-card-r4 .row b { font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+	.line-card-r4 hr { border: 0; border-top: 1px solid var(--hairline); margin: 5px -9px 3px; }
+	.line-card-r4 .sec-h { font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+		text-transform: uppercase; letter-spacing: 0.08em; color: var(--sp-text-faint); margin: 1px 0 3px; }
+	.line-card-r4 .sec .row { align-items: flex-start; }
+	.line-card-r4 .sec .row > span { color: var(--sp-text-strong); }
+	.line-card-r4 .sec.wrap .row > span { white-space: normal; }
+	.line-card-r4 .sec.trunc .row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.line-card-r4 .src-line { display: flex; gap: 5px; align-items: flex-start; min-width: 0; }
+	.line-card-r4 .src-badge { min-width: 13px; height: 13px; font-size: 9px; }
+
+	.marker { width: 15px; height: 15px; display: inline-flex; align-items: center;
+		justify-content: center; flex-shrink: 0; }
+	.spinner { flex-shrink: 0; width: 11px; height: 11px; border-radius: 999px;
+		border: 1.5px solid var(--sp-text-faint); border-top-color: transparent;
+		animation: spin 650ms linear infinite; }
+	.spinner.mini { width: 8px; height: 8px; border-width: 1.25px; }
+	.spinner.paused { border: 0; background: var(--sp-amber); width: 6px; height: 6px;
+		animation: blink 1s steps(1) infinite; }
+	.spinner.paused.still { animation: none; }
+	.dot.blink { animation: blink 1s steps(1) infinite; }
+	@keyframes spin { to { transform: rotate(360deg); } }
+	@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0.25; } }
+
+	.lsw-details { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden;
+		color: var(--sp-text);
+		transition: grid-template-rows 200ms ease-out, opacity 150ms ease-out, visibility 0s linear 200ms; }
+	.lsw.expanded .lsw-details { grid-template-rows: 1fr; opacity: 1; visibility: visible;
+		transition: grid-template-rows 200ms ease-out, opacity 150ms ease-out, visibility 0s; }
+	.lsw-details-inner { overflow: hidden; min-height: 0; display: flex; flex-direction: column;
+		gap: 10px; margin-top: 8px; margin-left: 7px; padding-left: 12px;
+		border-left: 1px solid var(--hairline); }
+	.lsw-sec { display: flex; flex-direction: column; gap: 4px; }
+	.lsw-sec-h { font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+		text-transform: uppercase; letter-spacing: 0.08em; color: var(--sp-text-faint);
+		min-height: 15px; display: flex; align-items: center; }
+	.lsw-sec > :not(.lsw-sec-h) { padding-left: 6px; }
+	.sec-h-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; }
+	.sec-h-side { font: 400 11px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+		text-transform: none; letter-spacing: 0; color: var(--sp-text); }
+	.lsw-err { color: var(--sp-red); }
+	.conf { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
+	.mid { color: var(--sp-text-faint); margin: 0 2px; }
+
+	.lsw-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+	.lsw-steps li { display: flex; align-items: center; gap: 3px; min-width: 0; }
+	.dot { width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; background: var(--sp-dot); }
+	.dot.ok { background: var(--sp-green); }
+	.dot.warn { background: var(--sp-amber); }
+	.dot.bad { background: var(--sp-red); }
+	.conn-row { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
+	.lsw-step-label { color: var(--sp-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.step-dur { margin-left: auto; color: var(--sp-text-faint); font-variant-numeric: tabular-nums;
+		flex-shrink: 0; padding-left: 10px; }
+	.lsw-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-variant-numeric: tabular-nums;
+		align-items: center; justify-content: space-between; width: 100%; }
+	.lsw-meta .left, .lsw-meta .right { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+	.conn { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--sp-text); }
+
+	.info { position: relative; display: inline-flex; align-items: center;
+		color: var(--sp-text-faint); cursor: help; flex-shrink: 0; vertical-align: -2px; }
+	.info:hover, .info:focus-visible { color: var(--sp-text-strong); outline: none; }
+	.info .hover-card { left: 50%; transform: translateX(-50%); width: 200px; font-weight: 400; }
+	.info:hover .hover-card, .info:focus-visible .hover-card { opacity: 1; }
+
+	.src-badges { display: inline-flex; gap: 3px; align-items: center; }
+	.src-badge { position: relative; display: inline-flex; align-items: center; justify-content: center;
+		min-width: 15px; height: 15px; padding: 0 3px; border-radius: 4px;
+		background: var(--sp-badge-bg); color: var(--sp-badge-text); font-size: 10px; font-weight: 600;
+		cursor: pointer; transition: background 100ms ease, color 100ms ease; text-decoration: none; }
+	.src-badge:hover, .src-badge:focus-visible { color: var(--ink); outline: none;
+		background: color-mix(in srgb, var(--sp-badge-text) 22%, var(--sp-badge-bg)); }
+	.src-badge .hover-card { left: 50%; transform: translateX(-50%); width: 230px; font-weight: 400; }
+	.src-badge:hover .hover-card, .src-badge:focus-visible .hover-card { opacity: 1; }
+	.hover-card .t { font-weight: 600; color: var(--ink); display: block;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.hover-card .d { color: var(--sp-text-faint); font-size: 10px; }
+	.hover-card .d svg { vertical-align: -1px; margin-left: 2px; }
+	.src-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+	.src-list li { display: flex; gap: 3px; align-items: center; min-width: 0; position: relative; cursor: pointer; }
+	.src-list a { color: var(--sp-text-strong); text-decoration: underline;
+		text-decoration-color: var(--sp-text-faint); text-underline-offset: 2px;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.src-list .src-prev { left: 21px; bottom: calc(100% + 4px); width: 230px; }
+	.src-list li:hover .src-prev, .src-list li:focus-within .src-prev { opacity: 1; }
+	.src-list li:hover .src-badge, .src-list li:focus-within .src-badge { color: var(--ink);
+		background: color-mix(in srgb, var(--sp-badge-text) 22%, var(--sp-badge-bg)); }
+	.src-list li:hover a { color: var(--ink); }
+	.src-list .ext-hint { color: var(--sp-text-faint); opacity: 0; flex-shrink: 0;
+		display: inline-flex; transition: opacity 100ms ease; }
+	.src-list li:hover .ext-hint, .src-list li:focus-within .ext-hint { opacity: 1; }
+
+	@media (prefers-reduced-motion: reduce) {
+		.spinner { border: 0; background: var(--sp-text-faint); width: 6px; height: 6px; animation: none; }
+		.spinner.paused { background: var(--sp-amber); animation: none; }
+		.dot.blink { animation: none; }
+		.lsw-chevron { transition: none; }
+		.lsw-details, .lsw.expanded .lsw-details { transition: none; }
+	}
+	body.reduce .spinner { border: 0; background: var(--sp-text-faint); width: 6px; height: 6px; animation: none; }
+	body.reduce .spinner.paused { background: var(--sp-amber); animation: none; }
+	body.reduce .dot.blink { animation: none; }
+	body.reduce .lsw-chevron { transition: none; }
+	body.reduce .lsw-details, body.reduce .lsw.expanded .lsw-details { transition: none; }
+</style>
+</head>
+<body>
+<main>
+	<header class="bar">
+		<h1>LiveSessionWidget — final design</h1>
+		<div class="ctl">
+			<span class="ctl-label">Theme</span>
+			<div class="seg" data-seg="theme">
+				<button aria-pressed="true" data-v="light">Light</button>
+				<button aria-pressed="false" data-v="dark">Dark</button>
+			</div>
+		</div>
+		<label class="chk"><input type="checkbox" id="reduceChk" /> Reduced motion</label>
+		<p class="sub">One card per state. Everything is live: click rows to expand, hover collapsed rows for the peek popover, hover badges/sources/ⓘ for cards, click sources to open a tab. Design rationale in DESIGN.md; iteration history in widget-playground.html.</p>
+	</header>
+
+	<div id="states"></div>
+</main>
+
+<script>
+	document.querySelector('[data-seg="theme"]').addEventListener('click', (e) => {
+		const btn = e.target.closest('button'); if (!btn) return;
+		[...e.currentTarget.children].forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+		document.documentElement.classList.toggle('dark', btn.dataset.v === 'dark');
+	});
+	document.getElementById('reduceChk').addEventListener('change', (e) =>
+		document.body.classList.toggle('reduce', e.target.checked));
+
+	const CHEVRON = `<button type="button" class="lsw-chevron-btn" aria-label="Toggle session details">
+		<svg class="lsw-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`;
+	const EXT_SVG = '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
+	const INFO_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><path d="M12 11.5V16"/><path d="M12 8h.01"/></svg>';
+	const INFO = `<span class="info" tabindex="0" aria-label="What is confidence?">${INFO_SVG}<span class="hover-card">How strongly the retrieved sources support this answer, based on retrieval scoring. (Mock value in this dev build.)</span></span>`;
+
+	const SOURCES = [
+		{ n: 1, title: 'BMGT808 · Venture Capital Deal Design — Week 4 notes', domain: 'courses.xfoundry.umd.edu', url: 'https://example.com/xfoundry/bmgt808/week-4' },
+		{ n: 2, title: 'Hydrogel-based water filtration — lab notebook', domain: 'research.xfoundry.umd.edu', url: 'https://example.com/xfoundry/hydrogel-notebook' },
+		{ n: 3, title: 'Provisional patent draft 63/482,119', domain: 'ip.xfoundry.umd.edu', url: 'https://example.com/xfoundry/patent-63-482119' }
+	];
+	const badge = (s) =>
+		`<a class="src-badge" href="${s.url}" target="_blank" rel="noopener" aria-label="Open source ${s.n}: ${s.title}">${s.n}<span class="hover-card"><span class="t">${s.title}</span><span class="d">${s.domain} ${EXT_SVG}</span></span></a>`;
+	const badges = (count) =>
+		count ? `<span class="src-badges">${SOURCES.slice(0, count).map(badge).join('')}</span>` : '';
+	const sourceList = (count) =>
+		count ? `<ul class="src-list">${SOURCES.slice(0, count)
+			.map((s) => `<li><span class="marker"><span class="src-badge">${s.n}</span></span><a href="${s.url}" target="_blank" rel="noopener">${s.title}</a><span class="ext-hint">${EXT_SVG}</span><span class="hover-card src-prev"><span class="t">${s.title}</span><span class="d">${s.domain} ${EXT_SVG}</span></span></li>`)
+			.join('')}</ul>` : '';
+
+	const fmtNew = (n) => { if (n < 1000) return String(Math.round(n));
+		const k = (Math.round(n / 100) / 10).toFixed(1); if (Number(k) < 1000) return k + 'k';
+		return (Math.round(n / 100000) / 10).toFixed(1) + 'M'; };
+	const fmtElapsed = (s) => (s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's');
+	const step = (label, status) => ({ label, status });
+	const STEP_DURS = [0.7, 1.2, 0.9, 0.6, 1.4];
+
+	const STATES = [
+		{ name: 'Starting', working: true, tickSec: true, tickTok: true, baseSec: 0, baseTok: 0, sources: 0,
+			label: 'Preparing session…', steps: [], defaultOpen: true,
+			try: 'Spinner = data flowing. Nothing to expand into yet beyond STATUS.' },
+		{ name: 'Streaming', working: true, tickSec: true, tickTok: true, baseSec: 8, baseTok: 640, sources: 2,
+			label: 'Searching research repositories…',
+			steps: [step('Parsing query', 'ok'), step('Searching course materials', 'ok'), step('Searching research repositories', 'run')],
+			defaultOpen: true,
+			try: 'Steps expanded by default while streaming — the checklist is the point. Collapse it, then hover the row: the dense peek popover appears (only when collapsed). Running step’s duration ticks live in both views.' },
+		{ name: 'Trace done · answer still generating', working: true, tickSec: true, tickTok: true, baseSec: 41, baseTok: 3400, sources: 3, confidence: '87% confidence',
+			label: 'Generating answer…',
+			steps: [step('Parsing query', 'ok'), step('Searching course materials', 'ok'), step('Searching research repositories', 'ok'), step('Ranking sources', 'ok'), step('Generating answer', 'run')],
+			defaultOpen: true,
+			try: 'The two-clock state: the scripted trace ended but the answer hasn’t. The final step stays “running” and nothing claims completion — only the message’s own done may.' },
+		{ name: 'Complete (footer)', working: false, tickSec: false, tickTok: false, baseSec: 62, baseTok: 5123, sources: 3, confidence: '87% confidence',
+			label: '', steps: [step('Parsing query', 'ok'), step('Searching course materials', 'ok'), step('Searching research repositories', 'ok'), step('Ranking sources', 'ok'), step('Generating answer', 'ok')],
+			defaultOpen: false,
+			try: 'Auto-collapsed summary: citation badges · confidence ⓘ. No “Complete” label — settled line + no spinner says it (screen readers still hear the transition). Hover badges for previews (each opens its source in a new tab); hover elsewhere for the peek; click to expand.' },
+		{ name: 'Error', working: false, error: true, tickSec: false, tickTok: false, baseSec: 9, baseTok: 120, sources: 1,
+			label: 'Error · Retrieval backend unavailable', errorMessage: 'Retrieval backend unavailable',
+			steps: [step('Parsing query', 'ok'), step('Searching course materials', 'run')], defaultOpen: false,
+			try: 'A step still running when the session died renders as errored (red dot, no ellipsis, — duration) — nothing is “in progress” under a dead session. Expand for the ERROR section.' },
+		{ name: 'Reconnecting · 2 sessions', working: true, reconnecting: true, tickSec: true, tickTok: false, baseSec: 15, baseTok: 1100, sources: 1,
+			label: 'Searching IP & patents…', conn: 'Reconnecting', sessions: '2 sessions',
+			steps: [step('Parsing query', 'ok'), step('Searching IP & patents', 'run')], defaultOpen: true,
+			try: 'The line becomes “Reconnecting…” with a blinking amber dot (blink = attempting; it follows the word, so the hung step’s dot is static amber). Tokens freeze — nothing is arriving; elapsed keeps counting — time truly passes.' }
+	];
+
+	const render = (st) => {
+		const working = st.working;
+		const paused = st.reconnecting;
+		const labelCls = st.error ? 'lsw-label err' : 'lsw-label';
+		const spinner = working
+			? `<span class="marker"><span class="spinner${paused ? ' paused' : ''}" aria-hidden="true"></span></span>` : '';
+		const footer = !working && !st.error;
+		const primary = footer
+			? `${badges(st.sources)}${st.confidence ? `${st.sources ? '<span class="mid">·</span>' : ''}<span class="conf"><span class="lsw-label">${st.confidence}</span>${INFO}</span>` : ''}`
+			: `<span class="${labelCls}">${paused ? 'Reconnecting…' : st.label}</span>`;
+
+		const stats = `<span class="lsw-stats" data-sec="${st.baseSec}" data-tok="${st.baseTok}"
+				data-tick-sec="${st.tickSec ? 1 : 0}" data-tick-tok="${st.tickTok ? 1 : 0}">
+			<span class="stat-time">${fmtElapsed(st.baseSec)}</span><span class="stat-sep"></span><span class="stat-tok">~${fmtNew(st.baseTok)} tokens</span></span>`;
+
+		const stepsHtml = st.steps.length
+			? `<ol class="lsw-steps">${st.steps.map((s, i) => {
+					const marker = st.error && s.status === 'run'
+						? '<span class="dot bad"></span>'
+						: s.status === 'run' && !paused
+							? '<span class="spinner mini" aria-hidden="true"></span>'
+							: s.status === 'run'
+								? '<span class="spinner mini paused still" aria-hidden="true"></span>'
+								: `<span class="dot${s.status === 'ok' ? ' ok' : ''}"></span>`;
+					const suffix = s.status === 'run' && !st.error ? '…' : '';
+					const dur = `<span class="step-dur"${!st.error && s.status === 'run' ? ' data-steprun data-base="2"' : ''}>${st.error && s.status === 'run' ? '—' : s.status === 'run' ? '2s' : STEP_DURS[i % STEP_DURS.length] + 's'}</span>`;
+					return `<li><span class="marker">${marker}</span><span class="lsw-step-label">${s.label}${suffix}</span>${dur}</li>`;
+				}).join('')}</ol>` : '';
+
+		const connStatus = st.conn ?? 'Connected';
+		const connDot = st.conn ? 'warn' : 'ok';
+		const sessCount = st.sessions ? 2 : 1;
+		const connSecX = `<div class="lsw-sec"><div class="lsw-sec-h">Status</div><div class="lsw-meta"><span class="left"><span class="conn-row"><span class="marker"><span class="dot ${connDot}${st.conn ? ' blink' : ''}"></span></span>${connStatus}</span></span><span class="right">${sessCount} ${sessCount === 1 ? 'session' : 'sessions'}</span></div></div>`;
+		const errSec = st.error && st.errorMessage
+			? `<div class="lsw-sec"><div class="lsw-sec-h">Error</div><div class="lsw-err">${st.errorMessage}</div></div>` : '';
+		const details = `<div class="lsw-details"><div class="lsw-details-inner">${
+				stepsHtml ? `<div class="lsw-sec"><div class="lsw-sec-h">Steps (${st.steps.length})</div>${stepsHtml}</div>` : ''
+			}${
+				st.sources ? `<div class="lsw-sec"><div class="lsw-sec-h sec-h-row"><span>Sources (${st.sources})</span>${st.confidence ? `<span class="conf sec-h-side"><span>${st.confidence}</span>${INFO}</span>` : ''}</div>${sourceList(st.sources)}</div>` : ''
+			}${connSecX}${errSec}</div></div>`;
+
+		const stepCardSec = st.steps.length
+			? `<div class="sec-h">Steps (${st.steps.length})</div><div class="sec trunc">${st.steps.map((s, i) =>
+					`<div class="row"><span>${s.label}</span><b${s.status === 'run' && !st.error ? ' data-steprun data-base="2"' : ''}>${s.status === 'run' ? (st.error ? '—' : '2s') : STEP_DURS[i % STEP_DURS.length] + 's'}</b></div>`).join('')}</div>` : '';
+		const srcCardSec = st.sources
+			? `<div class="sec-h sec-h-row"><span>Sources (${st.sources})</span>${st.confidence ? `<span class="sec-h-side">${st.confidence}</span>` : ''}</div><div class="sec wrap">${SOURCES.slice(0, st.sources)
+					.map((s) => `<div class="row"><span class="src-line"><span class="src-badge">${s.n}</span><span>${s.title}</span></span></div>`).join('')}</div>`
+			: '';
+		const connCardSec = `<div class="sec-h">Status</div><div class="sec"><div class="row"><span class="conn"><span class="dot ${connDot}${st.conn ? ' blink' : ''}"></span>${connStatus}</span><b>${sessCount} ${sessCount === 1 ? 'session' : 'sessions'}</b></div></div>`;
+		const lineCard = `<span class="hover-card line-card-r4">${[stepCardSec, srcCardSec, connCardSec]
+			.filter(Boolean).join('<hr />')}</span>`;
+
+		return `<div class="lsw ${st.defaultOpen ? 'expanded' : ''}">
+			<div class="line-wrap">
+				<div class="lsw-line">${spinner}${primary}<span class="lsw-tail">${stats}${CHEVRON}${lineCard}</span></div>
+			</div>
+			${details}
+		</div>`;
+	};
+
+	document.getElementById('states').innerHTML = STATES.map(
+		(st) => `<section class="state">
+			<div class="state-name">${st.name}</div>
+			<div class="card"><div class="card-canvas">${render(st)}</div></div>
+			<div class="try"><b>Notice:</b> ${st.try}</div>
+		</section>`
+	).join('');
+
+	document.querySelectorAll('.lsw-chevron-btn').forEach((btn) =>
+		btn.addEventListener('click', () => btn.closest('.lsw').classList.toggle('expanded')));
+	document.querySelectorAll('.lsw-line').forEach((line) =>
+		line.addEventListener('click', (e) => {
+			if (e.target.closest('.lsw-chevron-btn, .src-badge, .info, a')) return;
+			line.closest('.lsw').classList.toggle('expanded');
+		}));
+
+	const t0 = Date.now();
+	setInterval(() => {
+		const dt = Math.floor((Date.now() - t0) / 1000);
+		document.querySelectorAll('.lsw-stats').forEach((el) => {
+			const sec = Number(el.dataset.sec) + (el.dataset.tickSec === '1' ? dt : 0);
+			const tok = Number(el.dataset.tok) + (el.dataset.tickTok === '1' ? dt * 88 : 0);
+			el.querySelector('.stat-time').textContent = fmtElapsed(sec);
+			el.querySelector('.stat-tok').textContent = `~${fmtNew(tok)} tokens`;
+		});
+		document.querySelectorAll('[data-steprun]').forEach((d) => {
+			d.textContent = fmtElapsed(Number(d.dataset.base) + dt);
+		});
+	}, 250);
+</script>
+</body>
+</html>
