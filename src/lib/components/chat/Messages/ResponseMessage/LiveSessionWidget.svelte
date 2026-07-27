@@ -276,6 +276,8 @@
 	// The popover is rendered as Svelte markup and handed to tippy by element id, so
 	// interpolated source titles are escaped by the framework — no HTML is assembled here.
 	$: popoverId = `lsw-popover-${chatId}-${messageId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+	$: sourceCardId = (n: number) => `${popoverId}-badge-${n}`;
+	$: sourceRowCardId = (n: number) => `${popoverId}-src-${n}`;
 
 	/** Row clicks toggle, except where an inner control owns the interaction. */
 	const onRowClick = (event: MouseEvent) => {
@@ -328,34 +330,49 @@
 			-->
 			<span class="lsw-badges">
 				{#each sources as source (source.n)}
-					<a
-						class="lsw-badge"
-						href={source.url}
-						target="_blank"
-						rel="noopener noreferrer"
-						aria-label={$i18n.t('Source {{n}}: {{title}}', { n: source.n, title: source.title })}
+					<Tooltip
+						elementId={sourceCardId(source.n)}
+						content={source.title}
+						placement="top"
+						touch={false}
+						className="lsw-badge-wrap"
+						as="span"
 					>
-						{source.n}
-						<span class="hover-card">
-							<span class="hc-title">{source.title}</span>
-							<span class="hc-meta"
-								>{domainOf(source.url)}<ArrowUpRightBox
-									className="lsw-icon-xs"
-									strokeWidth="2"
-								/></span
-							>
+						<a
+							class="lsw-badge"
+							href={source.url}
+							target="_blank"
+							rel="noopener noreferrer"
+							aria-label={$i18n.t('Source {{n}}: {{title}}', {
+								n: source.n,
+								title: source.title
+							})}
+						>
+							{source.n}
+						</a>
+						<span slot="tooltip" id={sourceCardId(source.n)}>
+							<span class="hc">
+								<span class="hc-title">{source.title}</span>
+								<span class="hc-meta"
+									>{domainOf(source.url)}<ArrowUpRightBox
+										className="lsw-icon-xs"
+										strokeWidth="2"
+									/></span
+								>
+							</span>
 						</span>
-					</a>
+					</Tooltip>
 				{/each}
 			</span>
 			{#if confidenceText}
 				{#if sources.length}<span class="mid" aria-hidden="true">·</span>{/if}
 				<span class="lsw-conf">
 					<span class="lsw-label">{confidenceText} {$i18n.t('confidence')}</span>
-					<button type="button" class="lsw-info" aria-label={confidenceHelp}>
-						<InfoCircle className="lsw-icon" strokeWidth="2" />
-						<span class="hover-card hc-info" aria-hidden="true">{confidenceHelp}</span>
-					</button>
+					<Tooltip content={confidenceHelp} placement="top" touch={false} as="span">
+						<button type="button" class="lsw-info" aria-label={confidenceHelp}>
+							<InfoCircle className="lsw-icon" strokeWidth="2" />
+						</button>
+					</Tooltip>
 				</span>
 			{/if}
 		{:else}
@@ -363,8 +380,14 @@
 		{/if}
 
 		<span class="lsw-tail">
+			<!--
+				Both props go empty when expanded: with only the content element emptied,
+				tippy still opened an empty box on hover. content === '' is what makes the
+				Tooltip destroy its instance outright.
+			-->
 			<Tooltip
-				elementId={popoverId}
+				elementId={expanded ? '' : popoverId}
+				content={expanded ? '' : $i18n.t('Session details')}
 				placement="top"
 				touch={false}
 				className="lsw-tail-inner"
@@ -447,7 +470,9 @@
 		<div class="lsw-details-inner">
 			{#if steps.length}
 				<div class="lsw-sec">
-					<div class="lsw-sec-h">{$i18n.t('Steps')} ({steps.length})</div>
+					<div class="lsw-sec-h">
+						<span class="lsw-sec-label">{$i18n.t('Steps')} ({steps.length})</span>
+					</div>
 					<ol class="lsw-steps">
 						{#each steps as step (step.id)}
 							<li>
@@ -478,15 +503,16 @@
 
 			{#if sources.length}
 				<div class="lsw-sec">
-					<div class="lsw-sec-h sec-h-row">
-						<span>{$i18n.t('Sources')} ({sources.length})</span>
+					<div class="lsw-sec-h">
+						<span class="lsw-sec-label">{$i18n.t('Sources')} ({sources.length})</span>
 						{#if confidenceText}
 							<span class="lsw-conf sec-h-side">
 								<span>{confidenceText} {$i18n.t('confidence')}</span>
-								<button type="button" class="lsw-info" aria-label={confidenceHelp}>
-									<InfoCircle className="lsw-icon" strokeWidth="2" />
-									<span class="hover-card hc-info" aria-hidden="true">{confidenceHelp}</span>
-								</button>
+								<Tooltip content={confidenceHelp} placement="top" touch={false} as="span">
+									<button type="button" class="lsw-info" aria-label={confidenceHelp}>
+										<InfoCircle className="lsw-icon" strokeWidth="2" />
+									</button>
+								</Tooltip>
 							</span>
 						{/if}
 					</div>
@@ -496,21 +522,35 @@
 								<span class="marker" aria-hidden="true">
 									<span class="lsw-badge lsw-badge--static">{source.n}</span>
 								</span>
-								<a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
-								<span class="src-ext" aria-hidden="true"
-									><ArrowUpRightBox className="lsw-icon-xs" strokeWidth="2" /></span
+								<!--
+									The preview is a tippy instance, not an absolutely-positioned card:
+									it renders into document.body, so no overflow or stacking ancestor
+									between here and the page root can clip it.
+								-->
+								<Tooltip
+									elementId={sourceRowCardId(source.n)}
+									content={source.title}
+									placement="top"
+									touch={false}
+									className="lsw-src-link"
+									as="span"
 								>
-								<!-- Anchored to the row, never inside the truncating link: an
-									 overflow:hidden ancestor would clip it invisible. -->
-								<span class="hover-card src-prev">
-									<span class="hc-title">{source.title}</span>
-									<span class="hc-meta"
-										>{domainOf(source.url)}<ArrowUpRightBox
-											className="lsw-icon-xs"
-											strokeWidth="2"
-										/></span
+									<a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
+									<span class="src-ext" aria-hidden="true"
+										><ArrowUpRightBox className="lsw-icon-xs" strokeWidth="2" /></span
 									>
-								</span>
+									<span slot="tooltip" id={sourceRowCardId(source.n)}>
+										<span class="hc">
+											<span class="hc-title">{source.title}</span>
+											<span class="hc-meta"
+												>{domainOf(source.url)}<ArrowUpRightBox
+													className="lsw-icon-xs"
+													strokeWidth="2"
+												/></span
+											>
+										</span>
+									</span>
+								</Tooltip>
 							</li>
 						{/each}
 					</ul>
@@ -518,7 +558,9 @@
 			{/if}
 
 			<div class="lsw-sec">
-				<div class="lsw-sec-h">{$i18n.t('Status')}</div>
+				<div class="lsw-sec-h">
+					<span class="lsw-sec-label">{$i18n.t('Status')}</span>
+				</div>
 				<div class="lsw-status-row">
 					<span class="conn-row">
 						<span class="marker" aria-hidden="true">
@@ -537,7 +579,9 @@
 
 			{#if displayStatus === 'error'}
 				<div class="lsw-sec">
-					<div class="lsw-sec-h">{$i18n.t('Error')}</div>
+					<div class="lsw-sec-h">
+						<span class="lsw-sec-label">{$i18n.t('Error')}</span>
+					</div>
 					<div class="lsw-err">{state?.errorMessage ?? $i18n.t('Stream failed')}</div>
 				</div>
 			{/if}
@@ -798,7 +842,17 @@
 		flex-direction: column;
 		gap: 4px;
 	}
+	/* Layout only. The monospace treatment lives on the label, so side content in the
+	   same row (confidence) is not sitting inside a monospace, uppercased context —
+	   which is what leaked through when the two were combined. */
 	.lsw-sec-h {
+		min-height: 15px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+	.lsw-sec-label {
 		font:
 			600 9px/1 ui-monospace,
 			SFMono-Regular,
@@ -807,21 +861,13 @@
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--sp-text-faint);
-		min-height: 15px;
-		display: flex;
-		align-items: center;
 	}
 	.lsw-sec > :not(.lsw-sec-h) {
 		padding-left: 6px;
 	}
-	.sec-h-row {
-		justify-content: space-between;
-		gap: 10px;
-	}
 	.sec-h-side {
-		font: 400 11px/1.2 inherit;
-		text-transform: none;
-		letter-spacing: 0;
+		font-size: 11px;
+		font-weight: 400;
 		color: var(--sp-text);
 	}
 
@@ -945,6 +991,15 @@
 		background: color-mix(in srgb, var(--sp-badge-text) 22%, var(--sp-badge-bg));
 	}
 
+	.lsw :global(.lsw-src-link) {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		min-width: 0;
+	}
+	.lsw :global(.lsw-badge-wrap) {
+		display: inline-flex;
+	}
 	.lsw-srcs a {
 		color: var(--sp-text-strong);
 		text-decoration: underline;
@@ -976,55 +1031,18 @@
 		opacity: 1;
 	}
 
-	/* ---------- hover cards ---------- */
-	.hover-card {
-		position: absolute;
-		bottom: calc(100% + 6px);
-		padding: 8px 10px;
-		border-radius: 8px;
-		border: 1px solid var(--sp-hairline);
-		background: var(--sp-card-bg);
-		box-shadow: 0 4px 16px rgb(0 0 0 / 0.14);
-		font-size: 11px;
-		line-height: 1.5;
-		font-weight: 400;
-		color: var(--sp-text-strong);
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 120ms ease-out;
-		z-index: 10;
-		left: 50%;
-		transform: translateX(-50%);
-		width: 230px;
-	}
-	.hc-info {
-		width: 200px;
-	}
-	.lsw-badge:hover .hover-card,
-	.lsw-badge:focus-visible .hover-card,
-	.lsw-info:hover .hover-card,
-	.lsw-info:focus-visible .hover-card {
-		opacity: 1;
-	}
-	.src-prev {
-		left: 21px;
-		transform: none;
-		bottom: calc(100% + 4px);
-	}
-	.lsw-srcs li:hover .src-prev,
-	.lsw-srcs li:focus-within .src-prev {
-		opacity: 1;
+	/* ---------- hover card bodies (rendered into tippy, not positioned here) ---------- */
+	.hc {
+		display: grid;
+		gap: 1px;
+		max-width: 240px;
 	}
 	.hc-title {
 		font-weight: 600;
-		color: var(--sp-ink);
-		display: block;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		white-space: normal;
 	}
 	.hc-meta {
-		color: var(--sp-text-faint);
+		opacity: 0.75;
 		font-size: 10px;
 		display: inline-flex;
 		align-items: center;
