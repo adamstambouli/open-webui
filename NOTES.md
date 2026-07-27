@@ -2,6 +2,8 @@
 
 > Status: implemented and verified in the browser. `npm run test:frontend` — 47 tests green.
 
+**▶ [Demo (mp4, 37s)](design/demo.mp4)** — the real thing, recorded live: a web-search question ("tell me about xFoundry at UMD"), the widget mounting as generation starts, steps streaming in with per-step durations, the seeded trace citing `[1][2][3]` beside the answer's own real web citations (the real-vs-mocked table, on camera), then the settle into the citation footer and the hover peek over the collapsed row. Screenshots: [light](design/showcase-light.png) · [dark](design/showcase-dark.png) · [peek popover](design/showcase-peek-popover.png).
+
 ## Run
 
 ```sh
