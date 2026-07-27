@@ -12,6 +12,16 @@ export type WidgetStep = {
 	id: string;
 	label: string;
 	status: WidgetStepStatus;
+	/** Stamped on entering `running`, and on leaving it — the pair gives the duration. */
+	startedAt?: number;
+	endedAt?: number;
+};
+
+/** A retrieved source, numbered so the UI can cite it compactly as [1][2][3]. */
+export type WidgetSource = {
+	n: number;
+	title: string;
+	url: string;
 };
 
 export type WidgetMetric = {
@@ -22,6 +32,7 @@ export type WidgetMetric = {
 export type WidgetEvent =
 	| { kind: 'step'; messageId: string; id: string; label: string; status: WidgetStepStatus }
 	| { kind: 'metric'; messageId: string; key: string; label: string; value: number }
+	| { kind: 'source'; messageId: string; n: number; title: string; url: string }
 	| { kind: 'done'; messageId: string }
 	| { kind: 'error'; messageId: string; message: string };
 
@@ -33,6 +44,7 @@ export type WidgetState = {
 	 */
 	status: WidgetStatus;
 	steps: WidgetStep[];
+	sources: WidgetSource[];
 	metrics: Record<string, WidgetMetric>;
 	startedAt: number;
 	/** When the scripted stream stopped producing frames. */
@@ -52,6 +64,7 @@ export const isTerminal = (status: WidgetStatus) => status === 'complete' || sta
 export const initialWidgetState = (startedAt: number): WidgetState => ({
 	status: 'starting',
 	steps: [],
+	sources: [],
 	metrics: {},
 	startedAt
 });
@@ -107,10 +120,32 @@ export const hydrateWidgetState = (raw: unknown): WidgetState | null => {
 	const steps: WidgetStep[] = [];
 	for (const entry of data.steps) {
 		if (typeof entry !== 'object' || entry === null) return null;
-		const { id, label, status } = entry as Record<string, unknown>;
+		const { id, label, status, startedAt, endedAt } = entry as Record<string, unknown>;
 		if (typeof id !== 'string' || typeof label !== 'string') return null;
 		if (!STEP_STATUSES.includes(status as WidgetStepStatus)) return null;
-		steps.push({ id, label, status: status as WidgetStepStatus });
+		// Timings are additive: absent is fine on anything written before they existed,
+		// but present-and-malformed still rejects the whole snapshot.
+		if (startedAt !== undefined && !isFiniteNumber(startedAt)) return null;
+		if (endedAt !== undefined && !isFiniteNumber(endedAt)) return null;
+		steps.push({
+			id,
+			label,
+			status: status as WidgetStepStatus,
+			...(isFiniteNumber(startedAt) ? { startedAt } : {}),
+			...(isFiniteNumber(endedAt) ? { endedAt } : {})
+		});
+	}
+
+	// Also additive — an older snapshot simply has no sources.
+	const sources: WidgetSource[] = [];
+	if (data.sources !== undefined) {
+		if (!Array.isArray(data.sources)) return null;
+		for (const entry of data.sources) {
+			if (typeof entry !== 'object' || entry === null) return null;
+			const { n, title, url } = entry as Record<string, unknown>;
+			if (!isFiniteNumber(n) || typeof title !== 'string' || typeof url !== 'string') return null;
+			sources.push({ n, title, url });
+		}
 	}
 
 	if (typeof data.metrics !== 'object' || data.metrics === null || Array.isArray(data.metrics)) {
@@ -127,6 +162,7 @@ export const hydrateWidgetState = (raw: unknown): WidgetState | null => {
 	return {
 		status: data.status,
 		steps,
+		sources,
 		metrics,
 		startedAt: data.startedAt,
 		endedAt: data.endedAt,
@@ -262,14 +298,24 @@ export const parseWidgetEvent = (
 		return { kind: 'metric', messageId, key, label, value };
 	}
 
+	if (data.type === 'source') {
+		const { n, title, url } = data;
+		if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+		if (typeof title !== 'string' || typeof url !== 'string') return null;
+		return { kind: 'source', messageId, n, title, url };
+	}
+
 	return null;
 };
 
 /**
  * Pure reducer. Upserts are idempotent, so a duplicated frame leaves state deep-equal,
  * and anything arriving after a terminal status is ignored.
+ *
+ * `at` is the event's arrival time, passed in rather than read from a clock so the
+ * reducer stays pure while still being able to time each step.
  */
-export const widgetReducer = (state: WidgetState, event: WidgetEvent): WidgetState => {
+export const widgetReducer = (state: WidgetState, event: WidgetEvent, at: number): WidgetState => {
 	if (isTerminal(state.status)) return state;
 
 	switch (event.kind) {
@@ -277,21 +323,63 @@ export const widgetReducer = (state: WidgetState, event: WidgetEvent): WidgetSta
 			return { ...state, status: 'complete' };
 
 		case 'error':
-			return { ...state, status: 'error', errorMessage: event.message };
+			return {
+				...state,
+				status: 'error',
+				errorMessage: event.message,
+				// Nothing is in progress under a dead session. A step left spinning here
+				// would claim work that has stopped.
+				steps: state.steps.map((step) =>
+					step.status === 'running' ? { ...step, status: 'error', endedAt: at } : step
+				)
+			};
 
 		case 'step': {
 			const index = state.steps.findIndex((step) => step.id === event.id);
-			const next: WidgetStep = { id: event.id, label: event.label, status: event.status };
+			const existing = index === -1 ? undefined : state.steps[index];
+
+			// A repeated frame must not re-stamp, or the deliberate duplicate in the mock
+			// would stretch the step's measured duration.
+			if (existing && existing.label === event.label && existing.status === event.status) {
+				return state.status === 'streaming' ? state : { ...state, status: 'streaming' };
+			}
+
+			const wasRunning = existing?.status === 'running';
+			const isRunning = event.status === 'running';
+			const next: WidgetStep = {
+				...existing,
+				id: event.id,
+				label: event.label,
+				status: event.status
+			};
+			if (isRunning && !wasRunning) {
+				next.startedAt = at;
+				delete next.endedAt;
+			} else if (wasRunning && !isRunning) {
+				next.endedAt = at;
+			}
+
 			if (index !== -1) {
-				const existing = state.steps[index];
-				if (existing.label === next.label && existing.status === next.status) {
-					return state.status === 'streaming' ? state : { ...state, status: 'streaming' };
-				}
 				const steps = state.steps.slice();
 				steps[index] = next;
 				return { ...state, status: 'streaming', steps };
 			}
 			return { ...state, status: 'streaming', steps: [...state.steps, next] };
+		}
+
+		case 'source': {
+			const index = state.sources.findIndex((source) => source.n === event.n);
+			const next: WidgetSource = { n: event.n, title: event.title, url: event.url };
+			if (index !== -1) {
+				const existing = state.sources[index];
+				if (existing.title === next.title && existing.url === next.url) {
+					return state.status === 'streaming' ? state : { ...state, status: 'streaming' };
+				}
+				const sources = state.sources.slice();
+				sources[index] = next;
+				return { ...state, status: 'streaming', sources };
+			}
+			return { ...state, status: 'streaming', sources: [...state.sources, next] };
 		}
 
 		case 'metric': {

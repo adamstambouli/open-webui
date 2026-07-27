@@ -94,7 +94,9 @@ export const runWidgetStream = async (
 			const event = parseWidgetEvent(value.event, value.data);
 			if (!event || event.messageId !== messageId) continue;
 
-			write((state) => widgetReducer(state, event));
+			// Arrival time is the reducer's clock, supplied here so it stays pure.
+			const at = Date.now();
+			write((state) => widgetReducer(state, event, at));
 		}
 	} catch (error) {
 		// Aborts are the normal teardown path, not a failure to report.

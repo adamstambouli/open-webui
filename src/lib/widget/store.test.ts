@@ -28,6 +28,13 @@ const frame = (event: string, payload: Record<string, unknown>) =>
 const stepFrame = (id: string, label: string, status: string, messageId = 'm1') =>
 	frame('widget_delta', { messageId, type: 'step', id, label, status });
 
+/** Step timings come from the real clock here, so identity is compared without them. */
+const withoutTimings = (step: { id: string; label: string; status: string }) => ({
+	id: step.id,
+	label: step.label,
+	status: step.status
+});
+
 /** Lets queued stream reads and store writes settle before asserting. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -75,10 +82,16 @@ describe('runWidgetStream', () => {
 
 		const state = get(widgetStates)[KEY];
 		expect(state.status).toBe('complete');
-		expect(state.steps).toEqual([
+		// Timings come from the real clock here, so identity is compared without them.
+		expect(state.steps.map(withoutTimings)).toEqual([
 			{ id: 'parse', label: 'Parsing request', status: 'complete' },
 			{ id: 'search', label: 'Searching docs', status: 'complete' }
 		]);
+		// The store is what supplies the reducer's clock; check it actually did.
+		for (const step of state.steps) {
+			expect(step.startedAt).toBeGreaterThan(0);
+			expect(step.endedAt).toBeGreaterThanOrEqual(step.startedAt!);
+		}
 		expect(state.metrics).toEqual({ sources: { label: 'Sources', value: 5 } });
 		expect(state.finishedAt).toBeGreaterThanOrEqual(state.startedAt);
 
@@ -107,7 +120,9 @@ describe('runWidgetStream', () => {
 
 		const state = get(widgetStates)[KEY];
 		expect(state.status).toBe('complete');
-		expect(state.steps).toEqual([{ id: 'parse', label: 'Parsing request', status: 'running' }]);
+		expect(state.steps.map(withoutTimings)).toEqual([
+			{ id: 'parse', label: 'Parsing request', status: 'running' }
+		]);
 		expect(get(widgetStates)[widgetKey('c1', 'm2')]).toBeUndefined();
 	});
 

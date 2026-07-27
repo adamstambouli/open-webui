@@ -34,6 +34,10 @@ def _metric(key: str, label: str, value: float) -> dict:
     return {'type': 'metric', 'key': key, 'label': label, 'value': value}
 
 
+def _source(n: int, title: str, url: str) -> dict:
+    return {'type': 'source', 'n': n, 'title': title, 'url': url}
+
+
 # The collections a retrieval step can search. Which pair a message gets is seeded from
 # its id, so the demo varies between messages while staying reproducible for any one.
 _COLLECTIONS = [
@@ -42,6 +46,49 @@ _COLLECTIONS = [
     ('patents', 'Searching IP & patents'),
     ('projects', 'Cross-referencing active projects'),
 ]
+
+# Per-collection source pools. Which two collections a message searches is seeded, so
+# these titles vary with it while staying reproducible for any one message.
+_SOURCE_POOL: dict[str, list[tuple[str, str]]] = {
+    'courses': [
+        (
+            'BMGT808 · Venture Capital Deal Design — Week 4 notes',
+            'https://courses.xfoundry.umd.edu/bmgt808/week-4',
+        ),
+        (
+            'ENES460 · Technology Commercialization — case pack',
+            'https://courses.xfoundry.umd.edu/enes460/cases',
+        ),
+        (
+            'BMGT390 · Term sheet teardown — seminar recording',
+            'https://courses.xfoundry.umd.edu/bmgt390/seminar-9',
+        ),
+    ],
+    'research': [
+        (
+            'Hydrogel-based water filtration — lab notebook',
+            'https://research.xfoundry.umd.edu/hydrogel/notebook',
+        ),
+        (
+            'Membrane fouling under variable flux — dataset README',
+            'https://research.xfoundry.umd.edu/membrane-fouling',
+        ),
+        (
+            'Grant report: point-of-use filtration pilot',
+            'https://research.xfoundry.umd.edu/reports/pou-pilot',
+        ),
+    ],
+    'patents': [
+        ('Provisional patent draft 63/482,119', 'https://ip.xfoundry.umd.edu/provisional/63-482119'),
+        ('Freedom-to-operate memo — filtration media', 'https://ip.xfoundry.umd.edu/fto/filtration'),
+        ('Invention disclosure IDF-2024-0417', 'https://ip.xfoundry.umd.edu/idf/2024-0417'),
+    ],
+    'projects': [
+        ('Project Clearwater — milestone review', 'https://fibery.xfoundry.umd.edu/clearwater/m3'),
+        ('Cohort 12 · team staffing plan', 'https://fibery.xfoundry.umd.edu/cohort-12/staffing'),
+        ('Partner pipeline — Q3 summary', 'https://fibery.xfoundry.umd.edu/pipeline/q3'),
+    ],
+}
 
 _ERROR_MESSAGE = 'Retrieval backend unavailable'
 
@@ -72,15 +119,28 @@ def build_script(message_id: str, scenario: str) -> list[tuple[float, str, dict 
     total_sources = first_sources + 3 + (seed // 7) % 4  # first + 3-6
     confidence = round(0.78 + (seed % 17) / 100, 2)  # 0.78-0.94
 
+    # Two sources from the first collection, one from the second — cited [1][2][3] in the
+    # UI. The `sources` count metric stays alongside them for backward compatibility.
+    first_pool = _SOURCE_POOL[first_key]
+    second_pool = _SOURCE_POOL[second_key]
+    citations = [
+        first_pool[seed % len(first_pool)],
+        first_pool[(seed + 1) % len(first_pool)],
+        second_pool[(seed // 3) % len(second_pool)],
+    ]
+
     script: list[tuple[float, str, dict | str]] = [
         (0.3, 'widget_delta', _step('parse', 'Parsing query', 'running')),
         (0.4, 'widget_delta', _step('parse', 'Parsing query', 'complete')),
         (0.3, 'widget_delta', _step(first_key, first_label, 'running')),
+        (0.4, 'widget_delta', _source(1, *citations[0])),
+        (0.3, 'widget_delta', _source(2, *citations[1])),
         (0.5, 'widget_delta', _metric('sources', 'Sources', first_sources)),
         (0.4, 'widget_delta', _step(first_key, first_label, 'complete')),
         (0.3, 'widget_delta', _step(second_key, second_label, 'running')),
         # Exact duplicate of the frame above — the reducer must treat it as a no-op.
         (0.4, 'widget_delta', _step(second_key, second_label, 'running')),
+        (0.4, 'widget_delta', _source(3, *citations[2])),
         (0.5, 'widget_delta', _metric('sources', 'Sources', total_sources)),
         # Valid SSE framing, truncated JSON body — the parser must drop it and carry on.
         (0.3, 'widget_delta', '{"messageId":"__MESSAGE_ID__","type":"step","id":"trunca'),

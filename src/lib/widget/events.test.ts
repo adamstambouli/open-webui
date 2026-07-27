@@ -50,8 +50,21 @@ const readAll = async (body: ReadableStream<Uint8Array>) => {
 const step = (id: string, label: string, status: 'running' | 'complete' | 'error') =>
 	`event: widget_delta\ndata: ${JSON.stringify({ messageId: 'm1', type: 'step', id, label, status })}\n\n`;
 
-const reduceAll = (events: WidgetEvent[], from: WidgetState = initialWidgetState(0)) =>
-	events.reduce(widgetReducer, from);
+// The reducer takes arrival time as an argument, so it stays pure and testable.
+const reduceAll = (events: WidgetEvent[], from: WidgetState = initialWidgetState(0), at = 0) =>
+	events.reduce((state, event) => widgetReducer(state, event, at), from);
+
+const stepEvent = (
+	id: string,
+	label: string,
+	status: 'running' | 'complete' | 'error'
+): WidgetEvent => ({
+	kind: 'step',
+	messageId: 'm1',
+	id,
+	label,
+	status
+});
 
 describe('widgetKey', () => {
 	it('joins chat and message ids', () => {
@@ -117,13 +130,133 @@ describe('parseWidgetEvent', () => {
 	});
 });
 
+describe('step timing', () => {
+	it('stamps startedAt entering running and endedAt leaving it', () => {
+		const running = widgetReducer(
+			initialWidgetState(0),
+			stepEvent('parse', 'Parsing query', 'running'),
+			1_000
+		);
+		expect(running.steps[0].startedAt).toBe(1_000);
+		expect(running.steps[0].endedAt).toBeUndefined();
+
+		const finished = widgetReducer(running, stepEvent('parse', 'Parsing query', 'complete'), 1_700);
+		expect(finished.steps[0]).toEqual({
+			id: 'parse',
+			label: 'Parsing query',
+			status: 'complete',
+			startedAt: 1_000,
+			endedAt: 1_700
+		});
+	});
+
+	it('does not re-stamp when the same frame arrives twice', () => {
+		// The mock emits a deliberate duplicate; re-stamping would inflate the duration.
+		const first = widgetReducer(
+			initialWidgetState(0),
+			stepEvent('search', 'Searching', 'running'),
+			1_000
+		);
+		const second = widgetReducer(first, stepEvent('search', 'Searching', 'running'), 5_000);
+
+		expect(second.steps[0].startedAt).toBe(1_000);
+		expect(second.steps).toEqual(first.steps);
+	});
+
+	it('leaves a step that was never running without timings', () => {
+		const state = widgetReducer(initialWidgetState(0), stepEvent('x', 'X', 'complete'), 1_000);
+		expect(state.steps[0].startedAt).toBeUndefined();
+		expect(state.steps[0].endedAt).toBeUndefined();
+	});
+});
+
+describe('error orphaning', () => {
+	it('marks steps still running when the session errored', () => {
+		// Nothing is in progress under a dead session; leaving a spinner spinning there
+		// claims work that stopped.
+		const streaming = reduceAll(
+			[
+				stepEvent('parse', 'Parsing query', 'complete'),
+				stepEvent('search', 'Searching', 'running')
+			],
+			initialWidgetState(0),
+			1_000
+		);
+
+		const errored = widgetReducer(
+			streaming,
+			{ kind: 'error', messageId: 'm1', message: 'Backend down' },
+			2_500
+		);
+
+		expect(errored.status).toBe('error');
+		expect(errored.steps.map((s) => s.status)).toEqual(['complete', 'error']);
+		const orphan = errored.steps[1];
+		expect(orphan.startedAt).toBe(1_000); // keeps when it began
+		expect(orphan.endedAt).toBe(2_500); // and records when it stopped
+	});
+});
+
+describe('sources', () => {
+	const source = (n: number, title: string, url: string): WidgetEvent => ({
+		kind: 'source',
+		messageId: 'm1',
+		n,
+		title,
+		url
+	});
+
+	it('parses source frames and rejects malformed ones', () => {
+		expect(
+			parseWidgetEvent(
+				'widget_delta',
+				'{"messageId":"m1","type":"source","n":1,"title":"Week 4 notes","url":"https://x.test/a"}'
+			)
+		).toEqual({
+			kind: 'source',
+			messageId: 'm1',
+			n: 1,
+			title: 'Week 4 notes',
+			url: 'https://x.test/a'
+		});
+
+		const bad = [
+			'{"messageId":"m1","type":"source","n":"1","title":"T","url":"u"}',
+			'{"messageId":"m1","type":"source","n":1,"url":"u"}',
+			'{"messageId":"m1","type":"source","n":1,"title":"T"}'
+		];
+		for (const data of bad) expect(parseWidgetEvent('widget_delta', data), data).toBeNull();
+	});
+
+	it('upserts by n, in first-seen order, idempotently', () => {
+		const state = reduceAll([
+			source(1, 'First', 'https://x.test/1'),
+			source(2, 'Second', 'https://x.test/2'),
+			source(1, 'First', 'https://x.test/1'), // duplicate
+			source(2, 'Second, revised', 'https://x.test/2')
+		]);
+
+		expect(state.sources).toEqual([
+			{ n: 1, title: 'First', url: 'https://x.test/1' },
+			{ n: 2, title: 'Second, revised', url: 'https://x.test/2' }
+		]);
+	});
+});
+
 describe('snapshotWidgetState / hydrateWidgetState', () => {
 	const finished: WidgetState = {
 		status: 'complete',
 		steps: [
-			{ id: 'parse', label: 'Parsing request', status: 'complete' },
+			{
+				id: 'parse',
+				label: 'Parsing request',
+				status: 'complete',
+				startedAt: 1_100,
+				endedAt: 1_800
+			},
 			{ id: 'rank', label: 'Ranking passages', status: 'complete' }
 		],
+		sources: [{ n: 1, title: 'Week 4 notes', url: 'https://x.test/a' }],
 		metrics: { sources: { label: 'Sources', value: 7 } },
 		startedAt: 1_000,
 		finishedAt: 7_800,
@@ -167,6 +300,13 @@ describe('snapshotWidgetState / hydrateWidgetState', () => {
 			['ended before it started', { ...snapshot, startedAt: 40_000 }],
 			['stream outlasting the session', { ...snapshot, finishedAt: 40_000 }],
 			['steps not an array', { ...snapshot, steps: {} }],
+			[
+				'step timing that is not a number',
+				{ ...snapshot, steps: [{ id: 'a', label: 'A', status: 'complete', startedAt: 'soon' }] }
+			],
+			['sources not an array', { ...snapshot, sources: {} }],
+			['source missing a url', { ...snapshot, sources: [{ n: 1, title: 'T' }] }],
+			['source with a text number', { ...snapshot, sources: [{ n: '1', title: 'T', url: 'u' }] }],
 			['step missing a label', { ...snapshot, steps: [{ id: 'a', status: 'complete' }] }],
 			['step with a bogus status', { ...snapshot, steps: [{ id: 'a', label: 'A', status: 'x' }] }],
 			['metrics as an array', { ...snapshot, metrics: [] }],
@@ -317,8 +457,8 @@ describe('widgetReducer', () => {
 		]);
 
 		expect(state.steps).toEqual([
-			{ id: 'parse', label: 'Parsing', status: 'complete' },
-			{ id: 'search', label: 'Searching', status: 'running' }
+			{ id: 'parse', label: 'Parsing', status: 'complete', startedAt: 0, endedAt: 0 },
+			{ id: 'search', label: 'Searching', status: 'running', startedAt: 0 }
 		]);
 		expect(state.metrics).toEqual({ sources: { label: 'Sources', value: 5 } });
 	});
